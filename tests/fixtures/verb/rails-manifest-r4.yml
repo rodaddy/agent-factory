@@ -9,7 +9,7 @@
 # WHAT THIS IS FOR
 # ---------------------------------------------------------------------------
 #
-# rtech-infra#754: the software factory (CT101 `rodaddy-watcher`) must operate
+# rtech-infra#754: the software factory (runner-01 `rodaddy-watcher`) must operate
 # these rails from its JOB DEFINITIONS, not from prose it is trusted to have
 # read. A deterministic machine operator has no discipline; whatever rule is not
 # encoded in its jobs does not exist for it.
@@ -121,7 +121,7 @@ rails:
       - "GET /v2/rtech/<app>/tags/list returns the tag (authenticated; anonymous pulls are denied)"
     forbidden:
       - path: docker build / podman build / buildah on the operator workstation
-        failure: "no docker on the Mac (Rico ruling 2026-08-11); the build rail is in the cluster"
+        failure: "no docker on the Mac (The operator ruling 2026-08-11); the build rail is in the cluster"
       - path: omitting imagePullSecrets
         failure: the registry denies anonymous pulls; ImagePullBackOff with a misleading auth error
       - path: a Dockerfile with no USER line
@@ -138,7 +138,7 @@ rails:
       resolvers:
         - 10.0.1.220
         - 10.0.1.222
-      in_cluster_target: 10.0.20.150      # Traefik LB, NOT 10.0.20.55 (CT117)
+      in_cluster_target: 10.0.20.150      # Traefik LB, NOT 10.0.20.55 (runner-17)
     mutation:
       mechanism: declare-in-ansible-then-per-record-PUT
       # pihole-dns.yml currently applies DELETIONS but not ADDITIONS: its apply
@@ -157,12 +157,12 @@ rails:
         failure: REPLACES the whole array — wipes every other record on the box
       - path: creating a record live only, without declaring it in all.yml
         failure: one gravity rebuild or one reconcile run from gone
-      - path: pointing a -temp twin at CT117
+      - path: pointing a -temp twin at runner-17
         failure: the migration exists to REDUCE dependence on that box
 
   # -------------------------------------------------------------------------
   - id: edge-caddy
-    title: Public hostnames terminate on CT117 Caddy; three layers must all agree
+    title: Public hostnames terminate on runner-17 Caddy; three layers must all agree
     state: RUNNING
     source: _DOCS/app-delivery-rail.md §9; GOTCHAS.md 2026-08-12 (cloudflared config no-op); ledger row 86
     endpoint:
@@ -177,10 +177,10 @@ rails:
       - scripts/done-means/public-urls.sh from OUTSIDE, resolving via DoH 1.1.1.1
       - "all three layers present: zone DNS record, tunnel ingress rule, Caddy vhost"
     forbidden:
-      - path: editing /etc/cloudflared/config.yml on CT117
+      - path: editing /etc/cloudflared/config.yml on runner-17
         failure: "the unit has NO --config flag — the file is not the source at all; the edit is a silent no-op whose own validator reports OK"
       - path: an internal CA on a user-facing route
-        failure: "Rico ruling 2026-08-10; the root must then be installed on every device that opens the page"
+        failure: "The operator ruling 2026-08-10; the root must then be installed on every device that opens the page"
       - path: publishing a -temp hostname (CF record, tunnel rule, or Caddy vhost)
         failure: LAN-only is enforced by ABSENCE; adding any of the three publishes an unverified build
       - path: probing a public URL through a fleet-internal resolver
@@ -194,7 +194,7 @@ rails:
     endpoint:
       collector_manifests: rtech/k3s-deploy → manifests/apps/monitoring
       scrape_config: projects/ansible/templates/prometheus.yml.j2
-      store_of_record: outside the cluster (CT106)
+      store_of_record: outside the cluster (runner-06)
     mutation:
       mechanism: forgejo-pr-merge-api      # the monitoring ConfigMap rides the same GitOps rail
     verification:
@@ -245,7 +245,7 @@ constraints:
   - id: replicas-default
     rule: stateless workloads default to replicas >= 2 behind the LB
     state: RATIFIED
-    source: ledger row 60 (Rico ruling 2026-08-10)
+    source: ledger row 60 (The operator ruling 2026-08-10)
     exception_grammar: >
       A single-instance workload must DECLARE the exception with a stated reason
       in its own manifest — a visible decision, never a silent default. press is
@@ -323,7 +323,7 @@ constraints:
   - id: no-new-lxc
     rule: a new non-client LXC is a DEFECT, not a deployment
     state: RATIFIED
-    source: ledger row 83 (Rico ruling 2026-08-12); _DOCS/app-delivery-rail.md §11.20
+    source: ledger row 83 (The operator ruling 2026-08-12); _DOCS/app-delivery-rail.md §11.20
     detail: >
       Measured end state is 58 -> 23 running LXC. Stateless app workloads go in
       k3s. Proposing an LXC means naming which slot it takes and which occupant
@@ -332,7 +332,7 @@ constraints:
     check: the change creates no new non-client LXC
 
   - id: runner-label
-    rule: Forgejo Actions jobs use a label the CT103 runner actually advertises
+    rule: Forgejo Actions jobs use a label the runner-03 runner actually advertises
     state: RUNNING
     source: _DOCS/app-delivery-rail.md §3, §11.18
     detail: >
@@ -368,8 +368,8 @@ constraints:
 # ---------------------------------------------------------------------------
 
 factory_copy:
-  consumer: CT101 software-factory (rodaddy-watcher)
-  # CT101 is deliberately Ansible-exempt (ledger row 114): the box hands scoped
+  consumer: runner-01 software-factory (rodaddy-watcher)
+  # runner-01 is deliberately Ansible-exempt (ledger row 114): the box hands scoped
   # credential shares to other guests, so a standing fleet management key on it
   # is a strictly larger blast radius than the drift it fixes. Its access route
   # is `ssh root@10.0.1.4 'pct exec 9000 -- <cmd>'` (node07).

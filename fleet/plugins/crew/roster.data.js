@@ -44,7 +44,7 @@ export const CREW = {
 		role: "Code Reviewer",
 		icon: "radar",
 		avatar: "fleet/board/avatars/czajka.png",
-		bio: "Czajka reviews against what Rico already ruled, and every finding goes out with a name and a date.",
+		bio: "Czajka reviews against what the operator already ruled, and every finding goes out with a name and a date.",
 	},
 	"junior-claude-reviewer": {
 		name: "Kong",

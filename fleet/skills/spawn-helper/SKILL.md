@@ -5,7 +5,7 @@ description: "Use to hand a bounded, simple piece of your own run to a child Pi 
 
 # spawn-helper
 
-A child Pi session runs inside your own run (Rico, 2026-10-08: helpers for
+A child Pi session runs inside your own run (The operator, 2026-10-08: helpers for
 Nagatha, not new board seats). It costs no board task, no wake and no comment.
 Use it to take simpler work off your own context, not to add a coordinator.
 

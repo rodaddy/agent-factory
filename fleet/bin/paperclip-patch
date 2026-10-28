@@ -1,6 +1,6 @@
 #!/bin/bash
 # paperclip-patch -- apply the fleet's version-pinned patches to the installed
-# Paperclip. Run as rico ON THE BOX; it never restarts Paperclip.
+# Paperclip. Run as operator ON THE BOX; it never restarts Paperclip.
 #
 # Usage:
 #   paperclip-patch [--check] [--root <fleet root>] [--home <paperclip home>]

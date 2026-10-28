@@ -1,6 +1,6 @@
 ---
 name: scout-watchdog
-description: "The Scout's scheduled watchdog: find board work and pull requests that stopped short, nudge the stalled board work once, and list what waits on Rico. Board comments only; never acts on Forge."
+description: "The Scout's scheduled watchdog: find board work and pull requests that stopped short, nudge the stalled board work once, and list what waits on the operator. Board comments only; never acts on Forge."
 ---
 
 # scout-watchdog
@@ -29,7 +29,7 @@ forgot. You report; you do not finish other people's work.
      update and no run for 2 hours.
    - **Unblocked:** a `blocked` issue whose blockers are all `done` or
      `cancelled`.
-   - **Waiting on Rico:** a pending approval older than 24 hours.
+   - **Waiting on the operator:** a pending approval older than 24 hours.
    - **Missed intake:** in a repo ENROLLED for review intake (the `repos` list
      of the `rodaddy.forge-pr` plugin's config,
      `GET $PAPERCLIP_API_URL/api/plugins/rodaddy.forge-pr/config?companyId=$PAPERCLIP_COMPANY_ID`),
@@ -52,7 +52,7 @@ forgot. You report; you do not finish other people's work.
    ## Watchdog <date time>
    Coverage: <n> board issues, <n> approvals, <n> repos / <n> open PRs; unavailable: <list or none>
    Nudged: <issue links, or none>
-   Waiting on Rico: <approval links with age, or none>
+   Waiting on the operator: <approval links with age, or none>
    Missed intake: <PR links, or none>
    Waiting on the author: <PR links with age, or none>
    ```

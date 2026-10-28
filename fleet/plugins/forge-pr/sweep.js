@@ -32,7 +32,7 @@ import {
 	preflightComment,
 	pullFiles,
 } from "./preflight.js";
-import { fileRicoAsks } from "./rico-asks.js";
+import { fileOperatorAsks } from "./operator-asks.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLOSED_TASK = new Set(["done", "cancelled"]);
@@ -835,9 +835,9 @@ export async function runSweep(deps) {
 	// Board-only, so a Forge stop above does not skip it.
 	if (deps.approvals && deps.companyId && deps.findAgent) {
 		try {
-			await fileRicoAsks(deps);
+			await fileOperatorAsks(deps);
 		} catch (err) {
-			deps.log(`rico_asks failed ${err?.name || "Error"}`);
+			deps.log(`operator_asks failed ${err?.name || "Error"}`);
 		}
 	}
 	const took = deps.now() - start;
@@ -1009,7 +1009,7 @@ export function isMergeApproval(approval) {
 // the owner's to decide: the reject note names the class so the lead acts on it
 // (review-dispatch step 5). Class B, no classify, a null answer or a classify
 // error leave it pending; the error is logged by name only.
-async function notRicos(deps, id, t, head) {
+async function notOperators(deps, id, t, head) {
 	if (!deps.classify) return null;
 	let c;
 	try {
@@ -1020,7 +1020,7 @@ async function notRicos(deps, id, t, head) {
 	}
 	if (!c || typeof c.class !== "string" || c.class === "B") return null;
 	const reasons = Array.isArray(c.reasons) ? c.reasons : [];
-	return `Not Rico's: merge-check class ${c.class} (${reasons.join("; ")})`;
+	return `Not the operator's: merge-check class ${c.class} (${reasons.join("; ")})`;
 }
 
 // Board-side cleanup: reject pending merge approvals whose PR is merged/closed,
@@ -1065,7 +1065,7 @@ async function rejectStaleApprovals(deps, counter, only) {
 			const gone = pr?.merged === true || pr?.state === "closed";
 			let decisionNote = SUPERSEDED;
 			if (!gone && head.startsWith(t.sha)) {
-				decisionNote = await notRicos(deps, approval.id, t, head);
+				decisionNote = await notOperators(deps, approval.id, t, head);
 				if (!decisionNote) continue;
 			}
 			try {

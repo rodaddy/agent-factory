@@ -1,6 +1,6 @@
 -- sf#457: retire the factory `forge` band 9101-9150.
 --
--- Ruling (Rico, 2026-08-28): nothing pins VMID 9101, CI images live in the 9900
+-- Ruling (The operator, 2026-08-28): nothing pins VMID 9101, CI images live in the 9900
 -- range, and the old runner container is already destroyed. The band is a pin with no fleet behind
 -- it, so it is RETIRED rather than moved.
 --

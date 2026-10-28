@@ -1,13 +1,13 @@
 // Review-state labels on PRs: `pr create` adds review:requested, `pr review`
 // swaps approved/changes. Never a gate: a labelling failure is one stderr warning and the verb's
-// exit code stands. needs-rico is never set here; `label add` only creates it when missing.
+// exit code stands. needs-operator is never set here; `label add` only creates it when missing.
 // forge hands over its request and allLabels, so this file imports nothing from forge.
 
 const LABELS = {
 	"review:requested": ["#fbca04", "PR waiting for review"],
 	"review:approved": ["#0e8a16", "Review approved"],
 	"review:changes": ["#d93f0b", "Review asked for changes"],
-	"needs-rico": ["#b60205", "Needs Rico's decision"],
+	"needs-operator": ["#b60205", "Needs the operator's decision"],
 };
 const SWAP = { approve: "review:approved", "request-changes": "review:changes" };
 const STATES = ["review:requested", "review:approved", "review:changes"];

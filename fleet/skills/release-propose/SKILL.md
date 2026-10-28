@@ -6,7 +6,7 @@ description: "Once a day, find merged changes on enrolled apps that no tag has s
 # release-propose
 
 A merged change on an enrolled app becomes a visible release proposal. You
-propose. The owner, a session or Rico, decides and pushes the tag (Rico,
+propose. The owner, a session or the operator, decides and pushes the tag (The operator,
 2026-10-07, "Propose, owner tags"). No agent pushes a tag. Run once a day.
 
 Every read below is `node ~/fleet/forge/forge api GET <path>`. Raw curl to the

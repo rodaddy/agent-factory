@@ -94,7 +94,7 @@ describe("verb dispatch staging", () => {
 		// never hand-edited, which is how a fixture goes stale silently. The digest
 		// is over the raw file bytes.
 		expect(createHash("sha256").update(body, "utf8").digest("hex")).toBe(
-			"c6c715520832d6fb087ea29bbe43bf86748a1875e6c2255aea8991b2d051b4e5",
+			"b2f0180df211b2ba1e50278c8017e0ecc105151a7b3638febd12d69bb4e49706",
 		);
 		// BYTES vs CHARS, and the difference is real: the body is 29,098 bytes on disk
 		// but 29,020 UTF-8 characters, because its prose carries multi-byte em-dashes.
@@ -105,8 +105,8 @@ describe("verb dispatch staging", () => {
 		// sf#311 swapped both `cp -a` for `cp -R` and made the compile call an explicit
 		// `bash` invocation, adding the comments that explain why. It only ever grew,
 		// which keeps the cap assertion below honest.)
-		expect(Buffer.byteLength(body, "utf8")).toBe(30_712);
-		expect(body.length).toBe(30_634);
+		expect(Buffer.byteLength(body, "utf8")).toBe(30_780);
+		expect(body.length).toBe(30_702);
 		// And it is decisively over the transport cap the staging exists to respect.
 		expect(body.length).toBeGreaterThan(RUNNER_JOB_TRANSPORT_CAP);
 	});

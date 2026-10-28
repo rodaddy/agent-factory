@@ -43,7 +43,7 @@ function baseEntry(): Record<string, unknown> {
 			ref: "b".repeat(40),
 			declaration_sha256: hex64,
 			images: { uat: { tag: "v0.1.0", image: `reg/demo:v0.1.0@sha256:${hex64}` } },
-			by: "rico",
+			by: "operator",
 			on: "2026-09-07",
 		},
 		targets: [{ name: "uat", merge: "auto" }],

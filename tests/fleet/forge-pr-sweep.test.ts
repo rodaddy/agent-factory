@@ -81,7 +81,7 @@ const apiPr = (n: number, draft = false) => ({
 	draft,
 	title: `PR ${n}`,
 	html_url: `https://forge.example.internal/rodaddy/demo/pulls/${n}`,
-	user: { login: "rico" },
+	user: { login: "operator" },
 	head: { sha: SHA },
 });
 const apiIssue = (n: number, pr = false) => ({
@@ -118,7 +118,7 @@ describe("runSweep", () => {
 	const searchIssue = (
 		repo: string,
 		n: number,
-		login = "rico",
+		login = "operator",
 		created = "2026-09-30T20:00:00Z",
 	) => ({
 		number: n,
@@ -173,7 +173,7 @@ describe("runSweep", () => {
 					searchIssue("rodaddy/demo", 9),
 					searchIssue("rodaddy/three", 8, "sf-chotek"),
 					searchIssue("outsider/repo", 5),
-					searchIssue("rodaddy/two", 11, "rico", "2026-09-01T00:00:00Z"),
+					searchIssue("rodaddy/two", 11, "operator", "2026-09-01T00:00:00Z"),
 				];
 			} else if (opts.extra && path in opts.extra) {
 				const x = opts.extra[path];
@@ -341,7 +341,7 @@ describe("runSweep", () => {
 		expect(h.posts.length).toBe(1);
 		expect(h.posts[0]?.url).toBe(`${BASE}/repos/rodaddy/demo/issues/1/comments`);
 		expect(JSON.parse(h.posts[0]?.body ?? "{}").body).toBe(
-			"ROUND LIMIT: this pull request has had 2 review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (Rico, 2026-10-08).\n\n@rico: this goes back to you.",
+			"ROUND LIMIT: this pull request has had 2 review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (The operator, 2026-10-08).\n\n@operator: this goes back to you.",
 		);
 		expect(h.logs).toContain(`forge-pr: round limit rodaddy/demo#1 @ ${SHA.slice(0, 7)}`);
 		await runSweep(h.deps);
@@ -381,7 +381,7 @@ describe("runSweep", () => {
 		expect(h.posts.map((p) => [p.url, JSON.parse(p.body).body])).toEqual([
 			[
 				`${BASE}/repos/rodaddy/demo/issues/1/comments`,
-				"ROUND LIMIT: this pull request has had 2 review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (Rico, 2026-10-08).\n\n@rico: this goes back to you.",
+				"ROUND LIMIT: this pull request has had 2 review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (The operator, 2026-10-08).\n\n@operator: this goes back to you.",
 			],
 		]);
 		expect(h.state.get(seenKey)).toEqual({ key: `rodaddy/demo#1@${SHA}` });
@@ -412,7 +412,7 @@ describe("runSweep", () => {
 				...h.deps,
 				approvals,
 				companyId: "co-1",
-				cfg: { ...h.deps.cfg, boardUserId: "rico-user" },
+				cfg: { ...h.deps.cfg, boardUserId: "operator-user" },
 			});
 		const r = await run();
 		expect(r.stopped).toBe(false);
@@ -496,12 +496,12 @@ describe("runSweep", () => {
 			...h.deps,
 			approvals,
 			companyId: "co-1",
-			cfg: { ...h.deps.cfg, boardUserId: "rico-user" },
+			cfg: { ...h.deps.cfg, boardUserId: "operator-user" },
 		});
 		expect(decided.length).toBe(1);
 		expect(decided[0]?.id).toBe("ap-stale");
 		expect(decided[0]?.input.action).toBe("reject");
-		expect(decided[0]?.input.actorUserId).toBe("rico-user");
+		expect(decided[0]?.input.actorUserId).toBe("operator-user");
 		expect(decided[0]?.companyId).toBe("co-1");
 		expect(r.stale).toBe(1);
 		expect(h.logs.at(-1)).toMatch(/ stale=1 took=\d+$/);
@@ -534,7 +534,7 @@ describe("runSweep", () => {
 				...h.deps,
 				approvals,
 				companyId: "co-1",
-				cfg: { ...h.deps.cfg, boardUserId: "rico-user" },
+				cfg: { ...h.deps.cfg, boardUserId: "operator-user" },
 			});
 		return { decided, run };
 	};
@@ -658,7 +658,7 @@ describe("runSweep", () => {
 		expect(h.logs.join("\n")).not.toContain("top-secret-note");
 	});
 
-	describe("a live merge go that is not Rico's (merge-check class)", () => {
+	describe("a live merge go that is not the operator's (merge-check class)", () => {
 		type Verdict = { class: string; reasons: string[] } | null;
 		const classified = (h: ReturnType<typeof makeDeps>, answer: () => Verdict) => {
 			const calls: unknown[][] = [];
@@ -681,14 +681,14 @@ describe("runSweep", () => {
 				const r = await s.run();
 				expect(calls).toEqual([["rodaddy/two", 2, SHA]]);
 				expect(s.decided.map((d) => [d.id, d.input.action, d.input.decisionNote])).toEqual([
-					["ap-live", "reject", `Not Rico's: merge-check ${note}`],
+					["ap-live", "reject", `Not the operator's: merge-check ${note}`],
 				]);
 				expect(r.stale).toBe(1);
 			});
 		}
 		test("class B stays pending", async () => {
 			const h = makeDeps();
-			classified(h, () => ({ class: "B", reasons: ["label needs-rico"] }));
+			classified(h, () => ({ class: "B", reasons: ["label needs-operator"] }));
 			const s = sweepWith(h, [go("ap-live", live)]);
 			expect((await s.run()).stale).toBe(0);
 			expect(s.decided).toEqual([]);

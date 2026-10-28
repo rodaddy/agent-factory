@@ -49,7 +49,7 @@ route: set the GPT model and effort of one agent that is already on a route
 Two rules a change here must not break:
   1. The board's model field carries the LITERAL model id. The alias
      `sonnet[1m]` works for the harness but reads as Sonnet on the board
-     (Rico rejected it, 2026-10-03). The alias env keys point at the id; the
+     (The operator rejected it, 2026-10-03). The alias env keys point at the id; the
      model field is the id.
   2. Every Bifrost request carries x-bf-cache-key: claudex-nocache and
      x-bf-cache-no-store: true. Without them Bifrost's semantic cache can

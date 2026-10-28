@@ -42,7 +42,7 @@ const body = (over: Record<string, unknown> = {}) => ({
 		head: { sha: SHA },
 		html_url: "https://forge.example.internal/rodaddy/demo/pulls/7",
 		title: "Add thing",
-		user: { login: "rico" },
+		user: { login: "operator" },
 	},
 	...over,
 });
@@ -81,7 +81,7 @@ describe("parsePullRequestEvent", () => {
 				headSha: SHA,
 				url: "https://forge.example.internal/rodaddy/demo/pulls/7",
 				title: "Add thing",
-				author: "rico",
+				author: "operator",
 				body: "",
 				priority: "medium",
 				priorityWhy: "default",
@@ -230,7 +230,7 @@ describe("priority on the review and triage tasks", () => {
 		expect(t.title).toBe(`Review rodaddy/demo#7 @ ${SHA.slice(0, 7)}`);
 	});
 	test("review task: marker in the body", () => {
-		const t = prWith({ body: "[Blocker] Rico cannot ship" });
+		const t = prWith({ body: "[Blocker] the operator cannot ship" });
 		expect(t.priority).toBe("critical");
 		expect(lines(t)).toContain("Priority: critical ([blocker] marker)");
 	});
@@ -269,12 +269,12 @@ describe("client/*: PRs are reviewed, issues stay off (repo tiers)", () => {
 		number: 7,
 		head: { sha: SHA },
 		html_url: "https://x/pulls/7",
-		user: { login: "rico" },
+		user: { login: "operator" },
 	};
 	const issue = {
 		number: 12,
 		html_url: "https://x/issues/12",
-		user: { login: "rico" },
+		user: { login: "operator" },
 		labels: work,
 	};
 	test("a client PR event becomes a review task led by Skippy", () => {
@@ -325,7 +325,7 @@ describe("tierOf (repo tiers 0-5 from tier-N Forge topics)", () => {
 		expect(tierOf("rodaddy/demo", ["tier-4", "tier-2", "tier-5"])).toBe(2);
 		expect(tierOf("client/x", ["tier-5", "tier-1"])).toBe(1);
 	});
-	test("tier-0 beats tier-1 when both topics are present (infra, Rico 2026-10-07)", () =>
+	test("tier-0 beats tier-1 when both topics are present (infra, the operator 2026-10-07)", () =>
 		expect(tierOf("rodaddy/rtech-infra", ["tier-1", "tier-0"])).toBe(0));
 	test("a tier topic beats the client default", () =>
 		expect(tierOf("client/client-core", ["tier-4"])).toBe(4));
@@ -401,7 +401,7 @@ describe("issues need the factory-work label", () => {
 		).toBe(12);
 	});
 	test("the sweep yields no issue candidate without the label", () => {
-		const i = { number: 3, html_url: "https://x/issues/3", user: { login: "rico" } };
+		const i = { number: 3, html_url: "https://x/issues/3", user: { login: "operator" } };
 		expect(sweepCandidates("rodaddy/demo", [], [i])).toEqual([]);
 	});
 });
@@ -452,11 +452,11 @@ describe("past two rounds review is warned, not stopped", () => {
 			{
 				repo,
 				number: 13,
-				body: "ROUND LIMIT: this pull request has had 2 review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (Rico, 2026-10-08).\n\n@rico: this goes back to you.",
+				body: "ROUND LIMIT: this pull request has had 2 review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (The operator, 2026-10-08).\n\n@operator: this goes back to you.",
 			},
 		]);
 		expect(roundLimitText(3)).toBe(
-			"ROUND LIMIT: this pull request has had 3 review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (Rico, 2026-10-08).",
+			"ROUND LIMIT: this pull request has had 3 review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (The operator, 2026-10-08).",
 		);
 		expect(h.logs).toEqual([`forge-pr: round limit ${repo}#13 @ ${SHA.slice(0, 7)}`]);
 	});
@@ -626,7 +626,7 @@ describe("reviewPrOnce past the round limit: warned once per head, review task s
 		};
 		return { deps, comments, created };
 	};
-	const warning = (n: number) => `${roundLimitText(n)}\n\n@rico: this goes back to you.`;
+	const warning = (n: number) => `${roundLimitText(n)}\n\n@operator: this goes back to you.`;
 	test("round 3: the task is created and one ROUND LIMIT comment names 2 rounds", async () => {
 		const h = harness(["1111111", "2222222"]);
 		const r = await reviewPrOnce(h.deps, ev(headSha("a")));
@@ -797,12 +797,12 @@ describe("forgeAssign and forgeLabel (the Forge calls behind assignPr and addLab
 		return { calls, call };
 	};
 	test("assign keeps existing assignees and adds the author", async () => {
-		const f = fake({ "GET /repos/rodaddy/demo/issues/13": { assignees: [{ login: "rico" }] } });
+		const f = fake({ "GET /repos/rodaddy/demo/issues/13": { assignees: [{ login: "operator" }] } });
 		await forgeAssign(f.call, "rodaddy/demo", 13, "claude-session");
 		expect(f.calls[1]).toEqual({
 			method: "PATCH",
 			path: "/repos/rodaddy/demo/issues/13",
-			body: { assignees: ["rico", "claude-session"] },
+			body: { assignees: ["operator", "claude-session"] },
 		});
 	});
 	test("assign is a no-op when the author is already assigned", async () => {
@@ -1096,7 +1096,7 @@ describe("what counts as a review round", () => {
 		expect(board).toHaveLength(3);
 		expect(String(board[2]?.title)).toBe(`Review ${repo}#7 @ ${SHA.slice(0, 7)}`);
 		expect(String(board[2]?.description)).not.toContain(BASE_MERGE_LINE);
-		expect(comments).toEqual([`${roundLimitText(2)}\n\n@rico: this goes back to you.`]);
+		expect(comments).toEqual([`${roundLimitText(2)}\n\n@operator: this goes back to you.`]);
 	});
 });
 
@@ -1346,7 +1346,7 @@ describe("forge-pr worker: tasks carry the repo's project", () => {
 							title: "Bug",
 							body: "",
 							html_url: "https://forge.example.internal/rodaddy/demo/issues/32",
-							user: { login: "rico" },
+							user: { login: "operator" },
 							labels: [{ name: WORK_LABEL }],
 						},
 					};

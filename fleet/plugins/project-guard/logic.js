@@ -10,7 +10,7 @@ export const TRIAGE_LEAD = "Simms";
 // fleet/board/agents.json key `infra`.
 export const INFRA_SEAT = "Nagatha";
 export const REJECT_COMMENT =
-	"No project (Rico 2026-10-07: every task carries a project). Set the right project, then move it back to its owner.";
+	"No project (The operator 2026-10-07: every task carries a project). Set the right project, then move it back to its owner.";
 // A closed issue is not reopened to be triaged.
 const CLOSED = new Set(["done", "cancelled"]);
 

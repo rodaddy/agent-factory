@@ -1,5 +1,5 @@
 /**
- * @module fleet/notify/rico-notify
+ * @module fleet/notify/operator-notify
  * @description The job that tells the owner when the board needs him. One
  *   pass: read-only GETs to the fleet board, the rules in `./rules.ts`, the
  *   send plan in `./plan.ts`, then each text through `imsg send ... --json`
@@ -8,21 +8,21 @@
  *   with Node 24 type stripping, and under bun in tests, so it imports
  *   siblings with the `.ts` extension and uses no `Bun.*`.
  *
- *   Usage: rico-notify.ts [--dry-run]   (--dry-run prints, sends and writes nothing)
+ *   Usage: operator-notify.ts [--dry-run]   (--dry-run prints, sends and writes nothing)
  *   Exit: 0 ok, 1 board or send failure, 2 config.
  *
  *   Config (process environment, then the `KEY=VALUE` lines of the mode 600
- *   file named by RICO_NOTIFY_ENV_FILE, which win):
+ *   file named by OPERATOR_NOTIFY_ENV_FILE, which win):
  *     PAPERCLIP_API_URL, PAPERCLIP_COMPANY_ID, PAPERCLIP_BOARD_TOKEN,
- *     RICO_NOTIFY_TO            required; the last two are never printed
- *     RICO_NOTIFY_DIR           where the job's files live
+ *     OPERATOR_NOTIFY_TO            required; the last two are never printed
+ *     OPERATOR_NOTIFY_DIR           where the job's files live
  *                               (default /opt/factory-notify)
- *     RICO_NOTIFY_STATE         state file (default <dir>/state.json)
- *     RICO_NOTIFY_SEND          sender (default /opt/homebrew/bin/imsg)
- *     RICO_NOTIFY_BOARD_LINK    board address a phone can open (default the API URL)
- *     RICO_NOTIFY_BOARD_PREFIX  the company's URL prefix on the board, when it needs one
- *     RICO_NOTIFY_HEARTBEAT     `1` sends one "alive" text a day; OFF by default
- *     RICO_NOTIFY_HEARTBEAT_HOUR  local hour it may go from (default 8)
+ *     OPERATOR_NOTIFY_STATE         state file (default <dir>/state.json)
+ *     OPERATOR_NOTIFY_SEND          sender (default /opt/homebrew/bin/imsg)
+ *     OPERATOR_NOTIFY_BOARD_LINK    board address a phone can open (default the API URL)
+ *     OPERATOR_NOTIFY_BOARD_PREFIX  the company's URL prefix on the board, when it needs one
+ *     OPERATOR_NOTIFY_HEARTBEAT     `1` sends one "alive" text a day; OFF by default
+ *     OPERATOR_NOTIFY_HEARTBEAT_HOUR  local hour it may go from (default 8)
  */
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -64,7 +64,7 @@ const REQUIRED = [
 	"PAPERCLIP_API_URL",
 	"PAPERCLIP_COMPANY_ID",
 	"PAPERCLIP_BOARD_TOKEN",
-	"RICO_NOTIFY_TO",
+	"OPERATOR_NOTIFY_TO",
 ] as const;
 
 interface Config {
@@ -114,30 +114,31 @@ function readEnvFile(path: string): Record<string, string> {
 
 function loadConfig(): Config {
 	const env: Record<string, string | undefined> = { ...process.env };
-	const file = env.RICO_NOTIFY_ENV_FILE;
+	const file = env.OPERATOR_NOTIFY_ENV_FILE;
 	if (file) Object.assign(env, readEnvFile(file));
 	for (const name of REQUIRED) {
 		if (!env[name]) throw new Exit(2, `${name} is required`);
 	}
 	const api = (env.PAPERCLIP_API_URL ?? "").replace(/\/+$/, "");
 	const token = env.PAPERCLIP_BOARD_TOKEN ?? "";
-	const to = env.RICO_NOTIFY_TO ?? "";
+	const to = env.OPERATOR_NOTIFY_TO ?? "";
 	secrets.push(token, to);
-	const base = (env.RICO_NOTIFY_BOARD_LINK || api).replace(/\/+$/, "");
-	const prefix = (env.RICO_NOTIFY_BOARD_PREFIX ?? "").replace(/^\/+|\/+$/g, "");
-	const hour = Number(env.RICO_NOTIFY_HEARTBEAT_HOUR || DEFAULT_HEARTBEAT_HOUR);
+	const base = (env.OPERATOR_NOTIFY_BOARD_LINK || api).replace(/\/+$/, "");
+	const prefix = (env.OPERATOR_NOTIFY_BOARD_PREFIX ?? "").replace(/^\/+|\/+$/g, "");
+	const hour = Number(env.OPERATOR_NOTIFY_HEARTBEAT_HOUR || DEFAULT_HEARTBEAT_HOUR);
 	if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
-		throw new Exit(2, "RICO_NOTIFY_HEARTBEAT_HOUR must be 0 to 23");
+		throw new Exit(2, "OPERATOR_NOTIFY_HEARTBEAT_HOUR must be 0 to 23");
 	}
 	return {
-		heartbeat: env.RICO_NOTIFY_HEARTBEAT === "1",
+		heartbeat: env.OPERATOR_NOTIFY_HEARTBEAT === "1",
 		heartbeatHour: hour,
 		api,
 		company: env.PAPERCLIP_COMPANY_ID ?? "",
 		token,
 		to,
-		statePath: env.RICO_NOTIFY_STATE || join(env.RICO_NOTIFY_DIR || DEFAULT_DIR, "state.json"),
-		send: env.RICO_NOTIFY_SEND || DEFAULT_SEND,
+		statePath:
+			env.OPERATOR_NOTIFY_STATE || join(env.OPERATOR_NOTIFY_DIR || DEFAULT_DIR, "state.json"),
+		send: env.OPERATOR_NOTIFY_SEND || DEFAULT_SEND,
 		boardLink: prefix === "" ? base : `${base}/${prefix}`,
 	};
 }
@@ -253,7 +254,7 @@ function send(cfg: Config, text: string): string | null {
 }
 
 function sendFailed(why: string): void {
-	process.stderr.write(`rico-notify: send failed: ${scrub(why, secrets)}\n`);
+	process.stderr.write(`operator-notify: send failed: ${scrub(why, secrets)}\n`);
 }
 
 /** Same directory, then rename: a reader never sees half a state file. */
@@ -289,14 +290,14 @@ function boardFailed(cfg: Config, before: State, nowMs: number): State {
 		// Not told yet: the next failed pass is the 3rd again.
 		return { ...failed.state, boardFails: failed.state.boardFails - 1 };
 	}
-	process.stdout.write(`rico-notify: sent ${BOARD_DOWN_KEY}\n`);
+	process.stdout.write(`operator-notify: sent ${BOARD_DOWN_KEY}\n`);
 	// The first-pass summary is still owed, so this text does not prime the state.
 	return { ...markSent(failed.state, [BOARD_DOWN_KEY], nowMs), primed: before.primed };
 }
 
 async function main(args: string[]): Promise<number> {
 	const dryRun = args.length === 1 && args[0] === "--dry-run";
-	if (args.length > 0 && !dryRun) throw new Exit(2, "usage: rico-notify.ts [--dry-run]");
+	if (args.length > 0 && !dryRun) throw new Exit(2, "usage: operator-notify.ts [--dry-run]");
 	const cfg = loadConfig();
 	let state = readState(cfg.statePath);
 	const nowMs = Date.now();
@@ -306,7 +307,7 @@ async function main(args: string[]): Promise<number> {
 		got = await collect(cfg, state, nowMs);
 	} catch (err) {
 		if (!(err instanceof BoardError) || dryRun) throw err;
-		process.stderr.write(`rico-notify: ${err.message}\n`);
+		process.stderr.write(`operator-notify: ${err.message}\n`);
 		writeState(cfg.statePath, boardFailed(cfg, state, nowMs));
 		return 1;
 	}
@@ -339,7 +340,7 @@ async function main(args: string[]): Promise<number> {
 		}
 		state = markSent(state, message.keys, nowMs);
 		writeState(cfg.statePath, state);
-		process.stdout.write(`rico-notify: sent ${message.keys.join(" ")}\n`);
+		process.stdout.write(`operator-notify: sent ${message.keys.join(" ")}\n`);
 	}
 	writeState(cfg.statePath, state);
 	return code;
@@ -351,7 +352,7 @@ main(process.argv.slice(2)).then(
 	},
 	(err: unknown) => {
 		const message = err instanceof Error ? err.message : "unexpected failure";
-		process.stderr.write(`rico-notify: ${scrub(message, secrets)}\n`);
+		process.stderr.write(`operator-notify: ${scrub(message, secrets)}\n`);
 		process.exitCode = err instanceof Exit ? err.code : 1;
 	},
 );

@@ -5,7 +5,7 @@ Usage: precedents-harvest
 
 Env: FLEET_STATE_DIR (default ~/.local/state/fleet), read for
   merge-go-precedents.jsonl, which merge-check appends to on every override
-  (Rico, 2026-10-06). Output: one JSON object per line, {fields, expect: "yes"},
+  (The operator, 2026-10-06). Output: one JSON object per line, {fields, expect: "yes"},
   for a person to fold into fleet/skills/merge-pr/merge-go.json `examples`.
   Nothing is written.
 """

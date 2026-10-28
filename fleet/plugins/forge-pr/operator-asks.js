@@ -5,12 +5,12 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 // First sweep with no mark looks back two sweep intervals, not a backlog.
 const FIRST_LOOKBACK_MS = 10 * 60 * 1000;
-const SINCE_KEY = "ricoasks:since";
+const SINCE_KEY = "operatorasks:since";
 const BISHOP_LOGIN = "sf-bishop";
-export const RICO_ASK_RULING =
-	"Ask: find the rule that sent this to Rico and open the PR that makes agents decide it; operator ruling 2026-10-06: at most ~0.0001% of decisions reach him.";
+export const OPERATOR_ASK_RULING =
+	"Ask: find the rule that sent this to the operator and open the PR that makes agents decide it; operator ruling 2026-10-06: at most ~0.0001% of decisions reach him.";
 
-export const isRicoAsk = (a) => a?.type === "request_board_approval";
+export const isOperatorAsk = (a) => a?.type === "request_board_approval";
 
 // Paperclip answers camelCase; the table is snake_case. Accept either.
 function createdMs(a) {
@@ -30,11 +30,11 @@ function reasonsOf(a) {
 
 // Pure: asks to the owner per UTC day with their reasons (merge-check reasons, else
 // the title), plus the count created in the 24 h before now.
-export function ricoAskCounts(approvals, now) {
+export function operatorAskCounts(approvals, now) {
 	const byDay = new Map();
 	let last24h = 0;
 	for (const a of Array.isArray(approvals) ? approvals : []) {
-		if (!isRicoAsk(a)) continue;
+		if (!isOperatorAsk(a)) continue;
 		const ms = createdMs(a);
 		if (ms === null) continue;
 		if (ms <= now && ms > now - DAY_MS) last24h++;
@@ -49,7 +49,7 @@ export function ricoAskCounts(approvals, now) {
 	return { last24h, days };
 }
 
-export function ricoAskIssue(a, agentName, bishopId) {
+export function operatorAskIssue(a, agentName, bishopId) {
 	const rs = reasonsOf(a);
 	const lines = [
 		`Approval: ${a.id}`,
@@ -57,9 +57,9 @@ export function ricoAskIssue(a, agentName, bishopId) {
 		`Title: ${titleOf(a)}`,
 	];
 	if (rs.length) lines.push("", "merge-check reasons:", ...rs.map((r) => `- ${r}`));
-	lines.push("", RICO_ASK_RULING);
+	lines.push("", OPERATOR_ASK_RULING);
 	return {
-		title: `Rico was asked: ${titleOf(a)}`,
+		title: `The operator was asked: ${titleOf(a)}`,
 		description: lines.join("\n"),
 		assigneeAgentId: bishopId,
 		status: "todo",
@@ -68,10 +68,10 @@ export function ricoAskIssue(a, agentName, bishopId) {
 }
 
 // One Bishop issue per request_board_approval created since the last sweep,
-// idempotent per approval id (state ricoask:<id>), and one rico_asks log line.
+// idempotent per approval id (state operatorask:<id>), and one operator_asks log line.
 // deps: approvals.list, companyId, now, stateGet, stateSet, createTask, log,
 // findAgent(login), optional agentName(id).
-export async function fileRicoAsks(deps) {
+export async function fileOperatorAsks(deps) {
 	const start = deps.now();
 	const all = await deps.approvals.list({ companyId: deps.companyId });
 	const list = Array.isArray(all) ? all : [];
@@ -79,26 +79,26 @@ export async function fileRicoAsks(deps) {
 	const since = Number.isFinite(mark?.at) ? mark.at : start - FIRST_LOOKBACK_MS;
 	let filed = 0;
 	// One minute of overlap covers board/worker clock skew; ids dedupe it.
-	const fresh = list.filter((a) => isRicoAsk(a) && (createdMs(a) ?? -1) >= since - 60_000);
+	const fresh = list.filter((a) => isOperatorAsk(a) && (createdMs(a) ?? -1) >= since - 60_000);
 	let bishopId = null;
 	let blocked = false;
 	for (const a of fresh) {
-		const key = `ricoask:${a.id}`;
+		const key = `operatorask:${a.id}`;
 		if (await deps.stateGet(key)) continue;
 		bishopId ??= await deps.findAgent(BISHOP_LOGIN);
 		if (!bishopId) {
-			deps.log("rico_asks: Bishop not on the board, asks left unfiled");
+			deps.log("operator_asks: Bishop not on the board, asks left unfiled");
 			blocked = true;
 			break;
 		}
 		const name = deps.agentName ? await deps.agentName(requester(a)) : null;
-		const task = await deps.createTask(ricoAskIssue(a, name, bishopId));
+		const task = await deps.createTask(operatorAskIssue(a, name, bishopId));
 		await deps.stateSet(key, { issueId: task.id });
 		filed++;
 	}
 	// A missing Bishop leaves the mark so the next sweep files these asks.
 	if (!blocked) await deps.stateSet(SINCE_KEY, { at: start });
-	const counts = ricoAskCounts(list, start);
-	deps.log(`rico_asks count24h=${counts.last24h} filed=${filed}`);
+	const counts = operatorAskCounts(list, start);
+	deps.log(`operator_asks count24h=${counts.last24h} filed=${filed}`);
 	return { ...counts, filed };
 }

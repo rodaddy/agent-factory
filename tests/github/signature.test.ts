@@ -30,7 +30,7 @@ function shellLine(lane: string, env: Record<string, string>): { out: string; co
 describe("signatureLine for a Forgejo Actions lane", () => {
 	test("the watcher spelling is unchanged by default", () => {
 		expect(signatureLine({ date: DATE })).toBe(
-			"**agent:** rodaddy-watcher · model unattested · seat software-factory watcher (CT101) · 2026-01-02 UTC",
+			"**agent:** rodaddy-watcher · model unattested · seat software-factory watcher (runner-01) · 2026-01-02 UTC",
 		);
 	});
 

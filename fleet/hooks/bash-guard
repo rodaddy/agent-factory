@@ -36,7 +36,7 @@ GUARDED = (
     HOME + "/.codex/hooks.json",
     HOME + "/.codex/config.toml",
 )
-# SSH is Nagatha's alone (Rico, 2026-10-02): every other employee is refused
+# SSH is Nagatha's alone (The operator, 2026-10-02): every other employee is refused
 # the ssh family, git/rsync over ssh, and any touch of ~/.ssh. Her Claude runs
 # carry FLEET_EMPLOYEE=infra; her Pi runs on host01 carry FLEET_EMPLOYEE=nagatha,
 # the seat name pi-employee needs for pi/profiles/nagatha.json (sf#1584,
@@ -660,7 +660,7 @@ def ssh_allowed():
     return os.environ.get("FLEET_EMPLOYEE") in SSH_EMPLOYEES
 
 
-# Cluster writes belong to the same infra seat (Rico 2026-10-06, sf#1643:
+# Cluster writes belong to the same infra seat (The operator 2026-10-06, sf#1643:
 # Nagatha's box matches the Mac); every other employee is refused the write
 # verbs. Per program: (options that take a value, flag options, write verbs).
 CLUSTER_RULES = {

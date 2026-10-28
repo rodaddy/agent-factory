@@ -12,7 +12,7 @@ Output: JSON {class: "A"|"B"|"C"|"stale", mergeable: bool, checks, smythe, jev, 
   stale: PR merged/closed, or the live head is not <head-sha40>.
   C: a client/* repo, before anything else and with no Forge or board read: client
      is off-limits until it moves from GitHub (sf#1375), except client/client-agent,
-     which has moved to Forge (Rico, 2026-10-06). Otherwise the review
+     which has moved to Forge (The operator, 2026-10-06). Otherwise the review
      lead's verdict for this head is fix-first or absent, or a
      required status is not success. checks says which: "red" (failure/error)
      or "pending" (missing or not finished). Required is factory/infra-static
@@ -26,11 +26,11 @@ Output: JSON {class: "A"|"B"|"C"|"stale", mergeable: bool, checks, smythe, jev, 
      A PR whose base is not the repo's default branch (a stacked child, sf#1911)
      is class C until its parent lands and it is retargeted; a PR with no base
      on Forge is class C `base branch unknown`.
-  B: Rico's class (sf#1375, narrowed by sf#1493): label needs-rico, which only
-     Rico applies; or (sf#1690) a diff whose removed lines (the old side of an
-     edit included) cite Rico with a date or ruling, or `(Rico`: reason
-     `changes a Rico ruling: <file>:<old line>: <text>`. Binary changes also need Rico. Undoing a ruling stays with Rico
-     (company-conduct, "Rico only"). Added lines citing Rico are fine. A diff
+  B: The operator's class (sf#1375, narrowed by sf#1493): label needs-operator, which only
+     The operator applies; or (sf#1690) a diff whose removed lines (the old side of an
+     edit included) cite the operator with a date or ruling, or `(The operator`: reason
+     `changes an operator ruling: <file>:<old line>: <text>`. Binary changes also need the operator. Undoing a ruling stays with the operator
+     (company-conduct, "The operator only"). Added lines citing the operator are fine. A diff
      that cannot be read is class C `could not read the diff for the ruling check`.
   checks: "green"/"red"/"pending" over the factory/* statuses; "repo-ci" when
      the head has no factory/* status and every status it has is success (the
@@ -41,7 +41,7 @@ Output: JSON {class: "A"|"B"|"C"|"stale", mergeable: bool, checks, smythe, jev, 
   smythe: null, or {decision: approve|kickback|pending, reason, override}.
   jev: Jev merge-go's probability for this head, or null when not asked.
 
-Smythe decides (Rico, 2026-10-06). A verdict line counts from Smythe or the Review
+Smythe decides (The operator, 2026-10-06). A verdict line counts from Smythe or the Review
 Lead he dispatched (SOF-8387, below), the latest authorized one at this head
 winning. A head with no status,
 a SMYTHE_REPOS repo, or any Smythe decision line waits on Smythe, Head of
@@ -50,7 +50,7 @@ in a comment under the `## Review of ... at <sha7>` heading for this head, says 
 kickback: <why>` (class C, `kickback: <why>`, back to the author). After the
 kickback, a Forge PR comment whose first line starts `just do it`, posted at or
 after it by the PR's author or rodaddy, is class A `override by <login>`; any
-other login is ignored. needs-rico (class B) is unchanged.
+other login is ignored. needs-operator (class B) is unchanged.
 
 Otherwise a lead's approve asks Jev merge-go (fleet/skills/merge-pr/merge-go.json):
 GO (p >= 0.60, confident) is class A `... jev merge-go <p>`; no, unsure or no
@@ -85,13 +85,13 @@ escalate before it decides no verdict; under this head's review heading it is
 still Smythe's decision above. Smythe's own `escalate: <why>`, or his legacy
 `council call: <why>`, is an escalate too: held for his answer after it, as above.
 
-No lead verdict (sf#1730; Rico, 2026-10-07). When pair tasks `Review
+No lead verdict (sf#1730; the operator, 2026-10-07). When pair tasks `Review
 <owner/repo>#<n> @ <sha7> (<Name>)` exist for the head, pair_verdict decides in
 place of a lead: the newest verdict from each family (CLAUDE_REVIEWERS,
 GPT_REVIEWERS), both approve. Smythe's verdict on the head, newer than the
 pair's, still wins; a legacy parent with no pair tasks drains as above.
 A pair task counts when the forge-pr plugin filed it (originKind) or Smythe
-did (the board's createdByAgentId; Rico, 2026-10-08, L-173: no leads, Smythe
+did (the board's createdByAgentId; the operator, 2026-10-08, L-173: no leads, Smythe
 files one Anthropic + one GPT reviewer per slice).
 Each reviewer proves the PR body's `Blast radius:` line with `blast radius:
 confirmed` or `blast radius: wrong: <why>` in the verdict comment (R1, L-166):
@@ -102,7 +102,7 @@ Scripted non-code approve (sf#1730 US-002): with no verdict and nothing held on
 the board for the head, merge-check runs factoryignore-cli for that exact head.
 Only its exit 0 with `nonCode: true` and no refused path is an approve, class A
 `scripted: non-code`, after every other gate (PR body, required statuses green,
-needs-rico, Smythe). The Forge `verdict: approve (scripted: non-code)` comment is
+needs-operator, Smythe). The Forge `verdict: approve (scripted: non-code)` comment is
 never read: any CLI error, refusal or moved head leaves the old answer.
 """
 import base64
@@ -128,7 +128,7 @@ REQUIRED_STATIC = ["factory/infra-static"]
 # is k3s-deploy's branch-protection context, posted by the factory's lane.
 OWN_CI = {
     "rtech/k3s-deploy": ["factory/k3s-ci / check (pull_request)", "sop-gate"],
-    # rtech-whisper's Tests workflow, job pr-quality (rtech-whisper PR 547; Rico, 2026-10-06).
+    # rtech-whisper's Tests workflow, job pr-quality (rtech-whisper PR 547; the operator, 2026-10-06).
     "rtech/rtech-whisper": ["Tests / pr-quality (pull_request)"],
     # mcp2cli's CI workflow, job check (SOF-11343). It has no factory/smoke or
     # factory/prepush lane, and its factory/pr-review is advisory (config/repos.yml).
@@ -137,24 +137,24 @@ OWN_CI = {
 ENROLMENT = ("rodaddy/software-factory", "config/repos.yml", "main")
 # Copied from jev-route SENIOR_RULES, the humanRequired entries only. These
 # paths, and SMYTHE_REPOS, mark a big change for the PR-body gate (sf#1413).
-# SMYTHE_REPOS also wait on Smythe's decision (Rico, 2026-10-06).
+# SMYTHE_REPOS also wait on Smythe's decision (The operator, 2026-10-06).
 HUMAN_RULES = [
     ("secrets", re.compile(r"(auth|secret|credential|token)", re.I)),
     ("deploy", re.compile(r"(^|/)(deploy|k8s|manifests)(/|$)|^\.forgejo/workflows/", re.I)),
 ]
 SMYTHE_REPOS = re.compile(r"^(rtech/k3s-deploy|rtech/rtech-whisper.*)$")
 CLIENT = re.compile(r"^client/", re.I)
-# On Forge, so merged like any repo (Rico, 2026-10-06, sf#1375).
+# On Forge, so merged like any repo (The operator, 2026-10-06, sf#1375).
 KING_ON_FORGE = re.compile(r"client/client-agent", re.I)
 VERDICT = re.compile(r"^verdict:\s*(approve-with-fixes|approve|fix-first)\s*$", re.M)
 # The Head of Review (company-conduct, the crew table): his board verdict always
-# counts, and he alone dispatches a review and decides an escalation (Rico,
+# counts, and he alone dispatches a review and decides an escalation (The operator,
 # 2026-10-06).
 LEAD_NAME = "Smythe"
 # The Review Leads Smythe dispatches a review to (SOF-8387). A lead's verdict
 # counts only on a review issue Smythe dispatched to that lead, inside the window.
 REVIEW_LEADS = ["Adams", "Czajka"]
-# sf#1730 (Rico, 2026-10-07): no lead verdict. The reviewer pair's seats by
+# sf#1730 (The operator, 2026-10-07): no lead verdict. The reviewer pair's seats by
 # family, resolved by NAME; the newest verdict from each family on its pair task
 # `Review <repo>#<n> @ <sha7> (<Name>)`, both approve, is the go.
 # Adams and Czajka are reviewers of their family on a pair task (R5, L-166) and
@@ -165,21 +165,21 @@ GPT_REVIEWERS = ["Colter", "Kong", "Czajka"]
 # Key and value are case-insensitive (SOF-10778): a `Wrong:` objection is never
 # dropped as an old-skill missing line; an unknown value still is.
 BLAST = re.compile(r"^(?i:blast radius:[ \t]*(confirmed|wrong:[ \t]*(\S.*)))[ \t]*$", re.M)
-# Smythe's decision under this head's review heading (Rico,
+# Smythe's decision under this head's review heading (The operator,
 # 2026-10-06): main() reads it for a no-status head, a SMYTHE_REPOS repo, or
 # any such line.
 SMYTHE = re.compile(r"^smythe:\s*(approve|kickback:\s*(\S.*?))\s*$", re.M)
 # After Smythe's kickback, the author or rodaddy overrides it on the Forge PR.
 OVERRIDE = re.compile(r"^just do it\b", re.I)
 OVERRIDERS = ["rodaddy"]
-# Jev merge-go (sf#1375; Rico, 2026-10-06): the endpoint and model src/jev/client.ts
+# Jev merge-go (sf#1375; the operator, 2026-10-06): the endpoint and model src/jev/client.ts
 # pins, and the classifier beside the skill. realpath: install.sh runs this through
 # a ~/.local/bin symlink (PR 1556 round 2).
 JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 JEV_MODEL = "jev-1.13.0"
 MERGE_GO = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../merge-go.json")
 STATE_MAX = 1500
-# Overrides Jev learns from (Rico, 2026-10-06: "put it into some sort of memory file").
+# Overrides Jev learns from (The operator, 2026-10-06: "put it into some sort of memory file").
 PRECEDENTS = "merge-go-precedents.jsonl"
 # Smythe's dispatch line (review-dispatch step 2), at the start of a line. He
 # sometimes ends it with `;` or `,` and more text, so only the words are fixed.
@@ -187,7 +187,7 @@ DISPATCH = re.compile(r"^Dispatched to (\S+) \([^)\n]*\) per review-dispatch\b",
 # A dispatched lead hands the decision to Smythe (the retired lead skill). After it
 # his own verdict, or his decision line (review-dispatch, "Deciding a `smythe
 # review:` PR"), decides. A legacy `council call: <why>` reads the same, from a
-# lead or from Smythe himself (Rico, 2026-10-06: Smythe's council call is an
+# lead or from Smythe himself (The operator, 2026-10-06: Smythe's council call is an
 # escalate).
 ESCALATE = re.compile(r"^(?:escalate|council call):[ \t]*(\S.*?)\s*$", re.M)
 SMYTHE_SAYS = re.compile(r"^smythe:[ \t]*(approve|kickback:[ \t]*(\S.*?))\s*$", re.M)
@@ -200,7 +200,7 @@ PAIR_ORIGIN = "plugin:rodaddy.forge-pr"
 # The non-code re-derivation beside the classifier (sf#1730 US-002).
 FACTORYIGNORE_CLI = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                                  "../../../plugins/forge-pr/factoryignore-cli.js")
-# The PR-body gate (sf#1413; Rico, 2026-10-05: "Any PR that doesn't have a back
+# The PR-body gate (sf#1413; the operator, 2026-10-05: "Any PR that doesn't have a back
 # out plan and a test plan gets denied hard"): the two section headings, the
 # line that ends a section, the filler that counts as no section, and the
 # rehearsal link a big change's Backout must carry.
@@ -277,8 +277,8 @@ def ruling_removed(diff):
             continue
         if old_line is None:
             continue
-        if ln.startswith("-") and re.search(r"(?i)\brico\b", ln):
-            return f"changes a Rico ruling: {path}:{old_line}: {ln[1:].strip()[:80]}"
+        if ln.startswith("-") and re.search(r"(?i)\boperator\b", ln):
+            return f"changes an operator ruling: {path}:{old_line}: {ln[1:].strip()[:80]}"
         if ln.startswith(("-", " ")):
             old_line += 1
     return None
@@ -560,7 +560,7 @@ def lead_verdict(board, key, company, repo, num, sha, escalates=(), pair=False):
             # Smythe's verdict always counts; a Review Lead's only inside its dispatch.
             lead = not pair and who != leads[0] and who is not None and dispatched(dispatches, at) == who
             # A dispatched lead's escalate hands the decision to Smythe; Smythe's own
-            # `escalate:` or legacy `council call:` line is the same escalate (Rico,
+            # `escalate:` or legacy `council call:` line is the same escalate (The operator,
             # 2026-10-06), held until he answers after it.
             if (lead or who == leads[0]) and ESCALATE.findall(body):
                 handed.append((at, ESCALATE.findall(body)[-1]))
@@ -639,7 +639,7 @@ def pair_verdict(board, key, company, repo, num, sha, author=""):
         if not isinstance(issue, dict) or issue.get("title") not in titles or sha not in (issue.get("description") or ""):
             continue
         # Filed by the forge-pr plugin, or by Smythe himself (review-dispatch
-        # step 3; Rico, 2026-10-08, L-173): the board's creator stamp, never text.
+        # step 3; the operator, 2026-10-08, L-173): the board's creator stamp, never text.
         if issue.get("originKind") != PAIR_ORIGIN and not (head and issue.get("createdByAgentId") == head):
             continue
         # Read verdicts before status: cancellation never removes evidence.
@@ -857,7 +857,7 @@ def main(argv):
         names.extend(n for n in (f.get("filename"), f.get("previous_filename")) if n)
         paths.append({"path": f.get("filename"), "add": f.get("additions"), "del": f.get("deletions")})
     sized = lambda ps: "\n".join(f"{p.get('path')} +{p.get('add', '?')} -{p.get('del', '?')}" for p in ps)
-    # The PR-body gate (sf#1413; Rico, 2026-10-05: "Any PR that doesn't have a
+    # The PR-body gate (sf#1413; the operator, 2026-10-05: "Any PR that doesn't have a
     # back out plan and a test plan gets denied hard"): on every repo, whoever
     # opened it, a body with no real Backout or Test plan section is class C. A
     # big change (a SMYTHE_REPOS repo, a deploy/secrets/auth/CI path, or anything but
@@ -879,7 +879,7 @@ def main(argv):
         gate.append(missing)
 
     reasons = []
-    # sf#1690: a removed line carrying a ruling is Rico's (class B, below). A
+    # sf#1690: a removed line carrying a ruling is the operator's (class B, below). A
     # diff that cannot be read never makes a PR mergeable.
     diff = get_text(api, token, f"/repos/{repo}/pulls/{num}.diff")
     protected = next((n for n in names if protected_file(n)), None)
@@ -910,7 +910,7 @@ def main(argv):
     status = get(api, token, f"/repos/{repo}/commits/{sha}/status")
     states = {s.get("context"): s.get("status") or s.get("state") for s in (status.get("statuses") or [])}
     # A head with no factory/* status is a repo the factory does not check
-    # (Rico, 2026-10-06, sf#1493: agents decide, not Rico). Its own CI meets the
+    # (The operator, 2026-10-06, sf#1493: agents decide, not the operator). Its own CI meets the
     # checks requirement when every status is success ("repo-ci"); a failing or
     # pending one is red or pending, exactly as a factory check. A head with no
     # status at all is Smythe's (checks "none", class C until he decides).
@@ -953,14 +953,14 @@ def main(argv):
     if stacked or gate or reasons:
         return out("C", [*stacked, *gate, *reasons], checks)
 
-    # Rico's class (sf#1375, narrowed by sf#1493): the label needs-rico, which
-    # only Rico applies; or a diff that removes or edits a ruling line (sf#1690).
-    if any((lb.get("name") == "needs-rico") for lb in (pr.get("labels") or [])):
-        return out("B", ["label needs-rico"], checks)
+    # The operator's class (sf#1375, narrowed by sf#1493): the label needs-operator, which
+    # only the operator applies; or a diff that removes or edits a ruling line (sf#1690).
+    if any((lb.get("name") == "needs-operator") for lb in (pr.get("labels") or [])):
+        return out("B", ["label needs-operator"], checks)
     if ruling:
         return out("B", [ruling], checks)
     routine = f"verdict {verdict}; required statuses green"
-    # Rico, 2026-10-06: a head with no status at all, a SMYTHE_REPOS
+    # The operator, 2026-10-06: a head with no status at all, a SMYTHE_REPOS
     # repo, or any Smythe decision line waits on Smythe. `smythe: approve` is A;
     # `smythe: kickback: <why>` is C back to the author, until the author or
     # rodaddy posts `just do it` on the Forge PR at or after the kickback.
@@ -976,12 +976,12 @@ def main(argv):
         s = {"decision": "kickback", "reason": kick, "override": who}
         if not who:
             return out("C", [f"kickback: {kick}"], checks, smythe=s)
-        # The override is a precedent Jev reads next time (Rico, 2026-10-06).
+        # The override is a precedent Jev reads next time (The operator, 2026-10-06).
         record_precedent({"repo": repo, "number": int(num), "head": sha, "title": str(pr.get("title") or "")[:300],
                           "paths": paths[:30], "kickback": kick, "override_by": who,
                           "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
         return out("A", [f"override by {who}"], checks, smythe=s)
-    # R1 (Rico, 2026-10-07, L-166): a pair approve whose reviewers both
+    # R1 (The operator, 2026-10-07, L-166): a pair approve whose reviewers both
     # confirmed the PR's blast radius is the go, with no Jev call.
     # L-173: with a pair per slice, every counted task's newest verdict must confirm.
     per_task = ev.get("blast_by_task")

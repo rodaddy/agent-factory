@@ -83,11 +83,11 @@ describe("renderCheckScope — the scope clause", () => {
 	 * sanitizes must come back with no backslashes in it.
 	 */
 	test("hostile runner text is inert and carries no markdown escapes", () => {
-		const clause = renderCheckScope([{ name: "[x](http://evil) `hi` @rico", status: "pass" }]);
+		const clause = renderCheckScope([{ name: "[x](http://evil) `hi` @operator", status: "pass" }]);
 		expect(clause).not.toContain("\\");
 		expect(clause).not.toContain("](");
 		expect(clause).not.toContain("`");
-		expect(clause).not.toContain("@rico");
+		expect(clause).not.toContain("@operator");
 	});
 
 	/**

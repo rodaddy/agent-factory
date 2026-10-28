@@ -78,7 +78,7 @@ const HOSTS = ["10.0.20.105:9999"];
 const cfg: Logic.Config = { assigneeAgentId: NAGATHA, callbackHosts: HOSTS };
 const body = (over: Record<string, unknown> = {}) => ({
 	question: "Where is the k3s SOP index?",
-	asker: "rico@mac",
+	asker: "operator@mac",
 	hits: [
 		{ path: "rtech-infra/_DOCS/sops/k3s/README.md", line: 3, snippet: "k3s SOPs" },
 		{ path: "rtech-infra/_DOCS/sops/k3s/index.json" },
@@ -155,7 +155,7 @@ describe("handleAsk", () => {
 		expect(issue.status).toBe("todo");
 		expect(issue.priority).toBe("medium");
 		expect(issue.description).toContain("Where is the k3s SOP index?");
-		expect(issue.description).toContain("Asked by: rico@mac");
+		expect(issue.description).toContain("Asked by: operator@mac");
 		expect(issue.description).toContain("- rtech-infra/_DOCS/sops/k3s/README.md:3");
 		expect(issue.description).toContain("  > k3s SOPs");
 		expect(issue.description).toContain("- rtech-infra/_DOCS/sops/k3s/index.json");

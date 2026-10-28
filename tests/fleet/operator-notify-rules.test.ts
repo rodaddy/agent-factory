@@ -1,5 +1,5 @@
 /**
- * @module tests/fleet/rico-notify-rules
+ * @module tests/fleet/operator-notify-rules
  * @description Pure rules of the notifier: which board rows become
  *   something the owner must see. Fixture objects only, no I/O.
  */
@@ -26,7 +26,8 @@ const blocked = (over: Record<string, unknown> = {}) => ({
 	blockedTransitionAt: "2026-10-03T10:00:00.000Z",
 	unblockDescriptor: {
 		owner: "board",
-		action: "NEEDS RICO on rodaddy/x#12: https://forge.example.internal/rodaddy/x/pulls/12 then go",
+		action:
+			"NEEDS OPERATOR on rodaddy/x#12: https://forge.example.internal/rodaddy/x/pulls/12 then go",
 	},
 	...over,
 });
@@ -38,7 +39,7 @@ describe("blockedItems", () => {
 		expect(items[0]?.kind).toBe("blocked");
 		expect(items[0]?.key).toBe("blocked:i1:2026-10-03T10:00:00.000Z");
 		expect(items[0]?.link).toBe("https://forge.example.internal/rodaddy/x/pulls/12");
-		expect(items[0]?.line.startsWith("RIC-10: NEEDS RICO on rodaddy/x#12")).toBe(true);
+		expect(items[0]?.line.startsWith("RIC-10: NEEDS OPERATOR on rodaddy/x#12")).toBe(true);
 	});
 
 	test("an object owner gives none", () => {
@@ -244,12 +245,12 @@ describe("tellItems", () => {
 		id: "c1",
 		authorAgentId: "a1",
 		createdAt: ago(HOUR),
-		body: "TELL RICO: council decided X\nsee https://forge.example.internal/rodaddy/x/issues/3",
+		body: "TELL OPERATOR: council decided X\nsee https://forge.example.internal/rodaddy/x/issues/3",
 		...over,
 	});
 
-	test("the marker is TELL RICO:", () => {
-		expect(TELL_MARKER).toBe("TELL RICO:");
+	test("the marker is TELL OPERATOR:", () => {
+		expect(TELL_MARKER).toBe("TELL OPERATOR:");
 	});
 
 	test("an agent comment starting with the marker gives one item", () => {
@@ -271,12 +272,12 @@ describe("tellItems", () => {
 
 	test("the marker on line 2 gives none", () => {
 		expect(
-			tellItems(issue, [comment({ body: "Status update\nTELL RICO: council decided X" })], NOW),
+			tellItems(issue, [comment({ body: "Status update\nTELL OPERATOR: council decided X" })], NOW),
 		).toEqual([]);
 	});
 
 	test("a body with no URL has a null link", () => {
-		expect(tellItems(issue, [comment({ body: "TELL RICO: done" })], NOW)[0]?.link).toBeNull();
+		expect(tellItems(issue, [comment({ body: "TELL OPERATOR: done" })], NOW)[0]?.link).toBeNull();
 	});
 });
 

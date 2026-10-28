@@ -10,7 +10,7 @@ Every agent in the file must carry three integer fields:
   maxConcurrentRuns  0..5 (DESIGN: 1-5, raised 2026-10-07, sf#1730 review capacity); 0 = no slot, the seat stays paused
   timeoutSec         60..3600 (adapterConfig, per-run wall clock)
   graceSec           1..300, below timeoutSec (adapterConfig, kill grace)
-Seats carry no daily caps (sf#1857, Rico 2026-10-07: spend is measured, never
+Seats carry no daily caps (sf#1857, the operator 2026-10-07: spend is measured, never
 capped): maxDailyCostCents is refused on any seat and maxDailyRuns on a seat
 with a slot. A 0-slot seat must carry maxDailyRuns exactly 0, its off switch
 next to the pause (the board's slot floor is 1, W1a F1), not a budget.

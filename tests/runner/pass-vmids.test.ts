@@ -689,7 +689,9 @@ describe("same-pass vmid de-dup", () => {
 				},
 				list: async () => {
 					listCalls.push(9001);
-					return [{ vmid: 9001, status: "running", name: "CT118", jobId: null, spawnIso: null }];
+					return [
+						{ vmid: 9001, status: "running", name: "runner-18", jobId: null, spawnIso: null },
+					];
 				},
 				done: async (vmid: number) => {
 					doneCalls.push(vmid);
@@ -772,7 +774,7 @@ describe("same-pass vmid de-dup", () => {
 					// the destroy is still in flight, so 9001 is PRESENT and the vmid is held.
 					// Read 3 is job B's collision-gate re-probe, by which time the box is gone.
 					return listCalls <= 2
-						? [{ vmid: 9001, status: "running", name: "CT118", jobId: null, spawnIso: null }]
+						? [{ vmid: 9001, status: "running", name: "runner-18", jobId: null, spawnIso: null }]
 						: [];
 				},
 				done: async (vmid: number) => {

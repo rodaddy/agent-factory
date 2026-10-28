@@ -1,6 +1,6 @@
 # seam-probe: the run
 
-Who: the rtech-infra seat, on sf-fleet-01, as `rico`, after Pi 1.0.3 is
+Who: the rtech-infra seat, on sf-fleet-01, as `operator`, after Pi 1.0.3 is
 installed. This lane built the probe; it did not run it.
 
 1. Run Pi once with the argv Paperclip's `pi_local` adapter builds, plus the

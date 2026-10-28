@@ -38,10 +38,10 @@ type PiApi = { registerTool: (tool: DraftTool) => void };
 const PARAMETERS = {
 	type: "object",
 	properties: {
-		draft: { type: "string", description: "The reply text exactly as Rico would send it" },
+		draft: { type: "string", description: "The reply text exactly as the operator would send it" },
 		handoff: {
 			type: "string",
-			description: "'none', or one line: what Rico must decide himself and why",
+			description: "'none', or one line: what the operator must decide himself and why",
 		},
 	},
 	required: ["draft", "handoff"],
@@ -89,7 +89,7 @@ export function makeSubmitDraft(env: Env = process.env, doFetch: Fetch = fetch):
 		name: "submit_draft",
 		label: "Submit draft",
 		description:
-			"Hand your ONE draft reply to Rico. Puts it on this run's board issue and closes the issue. Call it exactly once, at the end. It sends nothing to the lead.",
+			"Hand your ONE draft reply to the operator. Puts it on this run's board issue and closes the issue. Call it exactly once, at the end. It sends nothing to the lead.",
 		parameters: PARAMETERS,
 		async execute(_id, params) {
 			if (typeof params?.draft !== "string" || typeof params?.handoff !== "string") {

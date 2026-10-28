@@ -115,7 +115,7 @@ async function worker(repo: string, cfg: Record<string, unknown>, board: unknown
 				head: { sha: SHA },
 				html_url: `https://forge.example.internal/${repo}/pulls/41`,
 				title: "Add thing",
-				user: { login: "rico" },
+				user: { login: "operator" },
 			},
 		});
 		await mod.default.onWebhook({
@@ -136,7 +136,7 @@ describe("forge-pr files its tasks with the repo's tier label", () => {
 			[`Review rodaddy/tier-two#41 @ ${SHA.slice(0, 7)}`, ["L2"]],
 		]);
 	});
-	test("tierLabels reads tier-0 through tier-5 (tier-0 is infra, Rico 2026-10-07)", () => {
+	test("tierLabels reads tier-0 through tier-5 (tier-0 is infra, the operator 2026-10-07)", () => {
 		const ids = tierLabelIds({ "tier-0": "L0", ...LABELS });
 		expect(ids?.get(0)).toBe("L0");
 		expect(ids?.get(5)).toBe("L5");

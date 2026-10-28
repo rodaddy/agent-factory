@@ -1,9 +1,9 @@
 /**
- * @module tests/fleet/rico-notify-run
- * @description `fleet/notify/rico-notify.ts` run as a real child process
+ * @module tests/fleet/operator-notify-run
+ * @description `fleet/notify/operator-notify.ts` run as a real child process
  *   against a fake board (`Bun.serve`, in-memory rows, every request
  *   recorded) and a fake `imsg` that logs its argv. Nothing is sent and no real
- *   board is called. `RICO_NOTIFY_UNDER_TEST` points the suite at a mutated copy.
+ *   board is called. `OPERATOR_NOTIFY_UNDER_TEST` points the suite at a mutated copy.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
@@ -19,12 +19,12 @@ import { join, resolve } from "node:path";
 import { testTmpBase } from "../support/test-temp";
 
 const SCRIPT =
-	process.env.RICO_NOTIFY_UNDER_TEST ??
-	resolve(import.meta.dir, "../../fleet/notify/rico-notify.ts");
+	process.env.OPERATOR_NOTIFY_UNDER_TEST ??
+	resolve(import.meta.dir, "../../fleet/notify/operator-notify.ts");
 const TOKEN = ["fake", "board", "value"].join("-");
 const HANDLE = "someone@example.invalid";
 const COMPANY = "co-1";
-const SCRATCH = join(testTmpBase(), `rico-notify-${process.pid}-${Date.now()}`);
+const SCRATCH = join(testTmpBase(), `operator-notify-${process.pid}-${Date.now()}`);
 const STATE = join(SCRATCH, "state.json");
 const SENDER = join(SCRATCH, "imsg");
 const SENT_LOG = join(SCRATCH, "sent.log");
@@ -56,7 +56,7 @@ let server: ReturnType<typeof Bun.serve>;
 
 function blocked(
 	n: number,
-	action = `NEEDS RICO on rodaddy/x: https://forge.example.internal/rodaddy/x/pulls/${n}`,
+	action = `NEEDS OPERATOR on rodaddy/x: https://forge.example.internal/rodaddy/x/pulls/${n}`,
 ): Row {
 	return {
 		id: `iss-${n}`,
@@ -110,9 +110,9 @@ function baseEnv(): Record<string, string> {
 		PAPERCLIP_API_URL: `http://127.0.0.1:${server.port}`,
 		PAPERCLIP_COMPANY_ID: COMPANY,
 		PAPERCLIP_BOARD_TOKEN: TOKEN,
-		RICO_NOTIFY_TO: HANDLE,
-		RICO_NOTIFY_STATE: STATE,
-		RICO_NOTIFY_SEND: SENDER,
+		OPERATOR_NOTIFY_TO: HANDLE,
+		OPERATOR_NOTIFY_STATE: STATE,
+		OPERATOR_NOTIFY_SEND: SENDER,
 	};
 }
 
@@ -170,13 +170,13 @@ test("company kill-switch approval is sent once even on the first pass", async (
 	expect(textOf(calls()[0])).toContain("Company daily budget STOP");
 });
 
-describe("rico-notify config", () => {
-	test("a missing RICO_NOTIFY_TO is exit 2, names the variable, calls no board", async () => {
+describe("operator-notify config", () => {
+	test("a missing OPERATOR_NOTIFY_TO is exit 2, names the variable, calls no board", async () => {
 		const env = baseEnv();
-		delete env.RICO_NOTIFY_TO;
+		delete env.OPERATOR_NOTIFY_TO;
 		const r = await run(["--dry-run"], env);
 		expect(r.code).toBe(2);
-		expect(r.stderr).toContain("rico-notify: RICO_NOTIFY_TO is required");
+		expect(r.stderr).toContain("operator-notify: OPERATOR_NOTIFY_TO is required");
 		expect(requests.length).toBe(0);
 	});
 
@@ -186,12 +186,12 @@ describe("rico-notify config", () => {
 			.filter(([key]) => key !== "PATH")
 			.map(([key, value]) => `${key}=${value}`);
 		writeFileSync(file, ["# notifier", "", ...body, ""].join("\n"));
-		const env = { PATH: process.env.PATH ?? "", RICO_NOTIFY_ENV_FILE: file };
+		const env = { PATH: process.env.PATH ?? "", OPERATOR_NOTIFY_ENV_FILE: file };
 
 		chmodSync(file, 0o644);
 		const open = await run(["--dry-run"], env);
 		expect(open.code).toBe(2);
-		expect(open.stderr).toContain("rico-notify: env file must be mode 600");
+		expect(open.stderr).toContain("operator-notify: env file must be mode 600");
 		expect(requests.length).toBe(0);
 
 		chmodSync(file, 0o600);
@@ -207,7 +207,7 @@ describe("rico-notify config", () => {
 	});
 });
 
-describe("rico-notify --dry-run", () => {
+describe("operator-notify --dry-run", () => {
 	test("a first pass prints one summary of the board-owned blocked issues and writes nothing", async () => {
 		issues = [blocked(1), blocked(2), { ...blocked(3), status: "todo" }];
 		const r = await run(["--dry-run"]);
@@ -252,12 +252,12 @@ describe("rico-notify --dry-run", () => {
 	});
 });
 
-describe("rico-notify board failures", () => {
+describe("operator-notify board failures", () => {
 	test("a 500 from /agents is exit 1 and stderr names the path and the status", async () => {
 		fail = { path: "/agents", status: 500 };
 		const r = await run(["--dry-run"]);
 		expect(r.code).toBe(1);
-		expect(r.stderr).toContain(`rico-notify: board GET /companies/${COMPANY}/agents -> 500`);
+		expect(r.stderr).toContain(`operator-notify: board GET /companies/${COMPANY}/agents -> 500`);
 	});
 
 	test("a 401 is exit 1", async () => {
@@ -290,12 +290,12 @@ function failedRun(agentId: string, minutesAgo: number): Row {
 	return { agentId, status: "failed", errorCode: "adapter_failed", createdAt: at, finishedAt: at };
 }
 
-describe("rico-notify sends", () => {
+describe("operator-notify sends", () => {
 	test("the first pass sends one summary through imsg, the second sends nothing", async () => {
 		issues = [blocked(1), blocked(2)];
 		const first = await run([]);
 		expect(first.code).toBe(0);
-		expect(first.stdout).toContain("rico-notify: sent blocked:iss-1:");
+		expect(first.stdout).toContain("operator-notify: sent blocked:iss-1:");
 		const sent = calls();
 		expect(sent.length).toBe(1);
 		const text = textOf(sent[0]);
@@ -336,7 +336,7 @@ describe("rico-notify sends", () => {
 		control({ code: 1, stderr: `cannot reach ${HANDLE}` });
 		const bad = await run([]);
 		expect(bad.code).toBe(1);
-		expect(bad.stderr).toContain("rico-notify: send failed: cannot reach <redacted>");
+		expect(bad.stderr).toContain("operator-notify: send failed: cannot reach <redacted>");
 		expect(readFileSync(STATE, "utf8")).not.toContain("blocked:iss-1");
 
 		control({});
@@ -352,7 +352,7 @@ describe("rico-notify sends", () => {
 		control({ status: "queued" });
 		const r = await run([]);
 		expect(r.code).toBe(1);
-		expect(r.stderr).toContain("rico-notify: send failed");
+		expect(r.stderr).toContain("operator-notify: send failed");
 		expect(readFileSync(STATE, "utf8")).not.toContain("blocked:iss-1");
 	});
 
@@ -387,7 +387,7 @@ describe("rico-notify sends", () => {
 		expect(text).toContain(`http://127.0.0.1:${server.port}/agents/ag-1`);
 	});
 
-	test("a TELL RICO: comment on the issue of an unfinished run is one text", async () => {
+	test("a TELL OPERATOR: comment on the issue of an unfinished run is one text", async () => {
 		primedState();
 		const now = new Date().toISOString();
 		issues = [{ id: "iss-9", identifier: "SOF-9", title: "council", status: "in_progress" }];
@@ -402,7 +402,12 @@ describe("rico-notify sends", () => {
 		];
 		comments = {
 			"iss-9": [
-				{ id: "c-1", body: "TELL RICO: council decided X", authorAgentId: "ag-1", createdAt: now },
+				{
+					id: "c-1",
+					body: "TELL OPERATOR: council decided X",
+					authorAgentId: "ag-1",
+					createdAt: now,
+				},
 			],
 		};
 		await run([]);
@@ -429,7 +434,12 @@ describe("rico-notify sends", () => {
 		];
 		comments = {
 			"iss-9": [
-				{ id: "c-1", body: "TELL RICO: council decided X", authorAgentId: "ag-1", createdAt: now },
+				{
+					id: "c-1",
+					body: "TELL OPERATOR: council decided X",
+					authorAgentId: "ag-1",
+					createdAt: now,
+				},
 			],
 		};
 		await run([]);
@@ -447,7 +457,11 @@ describe("rico-notify sends", () => {
 
 	test("the heartbeat does not go past the hourly cap (PR 1316)", async () => {
 		writeState({ sends: Array.from({ length: 6 }, () => new Date().toISOString()) });
-		const env = { ...baseEnv(), RICO_NOTIFY_HEARTBEAT: "1", RICO_NOTIFY_HEARTBEAT_HOUR: "0" };
+		const env = {
+			...baseEnv(),
+			OPERATOR_NOTIFY_HEARTBEAT: "1",
+			OPERATOR_NOTIFY_HEARTBEAT_HOUR: "0",
+		};
 		await run([], env);
 		expect(calls().length).toBe(0);
 		expect(readState().sends).toHaveLength(6);
@@ -486,7 +500,11 @@ describe("rico-notify sends", () => {
 		await run([]);
 		expect(calls().length).toBe(0);
 
-		const env = { ...baseEnv(), RICO_NOTIFY_HEARTBEAT: "1", RICO_NOTIFY_HEARTBEAT_HOUR: "0" };
+		const env = {
+			...baseEnv(),
+			OPERATOR_NOTIFY_HEARTBEAT: "1",
+			OPERATOR_NOTIFY_HEARTBEAT_HOUR: "0",
+		};
 		await run([], env);
 		await run([], env);
 		expect(calls().length).toBe(1);

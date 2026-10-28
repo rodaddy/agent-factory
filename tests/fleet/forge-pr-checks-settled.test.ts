@@ -26,7 +26,7 @@ const pr = (sha: string) => ({
 	state: "open",
 	title: "Add thing",
 	html_url: `https://forge.example.internal/${REPO}/pulls/7`,
-	user: { login: "rico" },
+	user: { login: "operator" },
 	head: { sha },
 });
 const prBody = (action: string, sha: string) => ({
@@ -71,7 +71,7 @@ async function harness() {
 				forgeToken: "ref",
 				reviewerAgentId: "dispatcher",
 				triageAgentId: "tri",
-				boardUserId: "rico-user",
+				boardUserId: "operator-user",
 			}),
 		},
 		secrets: { resolve: async () => SECRET },

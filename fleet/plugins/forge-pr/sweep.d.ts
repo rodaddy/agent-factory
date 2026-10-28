@@ -7,7 +7,7 @@ import type {
 	TriageIssue,
 } from "./logic.js";
 import type { ChangedFile } from "./preflight.js";
-import type { RicoAskIssue } from "./rico-asks.js";
+import type { OperatorAskIssue } from "./operator-asks.js";
 
 export interface SweepDeps {
 	admitReview?: ReviewOnceDeps["admitReview"];
@@ -23,7 +23,7 @@ export interface SweepDeps {
 	 * null: the repo has no project, the task is not filed and the next pass retries.
 	 */
 	createTask: (
-		task: ReviewIssue | TriageIssue | RicoAskIssue,
+		task: ReviewIssue | TriageIssue | OperatorAskIssue,
 		repo?: string,
 	) => Promise<{ id: string } | null>;
 	/** The PR's (repo, number) board issues whose title starts with query (the review-round count). */

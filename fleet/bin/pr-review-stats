@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """pr-review-stats: PR size against review speed, so the 1200-line rule can be
-watched and one big PR compared with a stack of small ones (Rico 2026-10-08).
+watched and one big PR compared with a stack of small ones (The operator 2026-10-08).
 It only reads Forge.
 
 Usage: pr-review-stats --repo <owner/repo> [--repo ...] [--since YYYY-MM-DD] [--json]

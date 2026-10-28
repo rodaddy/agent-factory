@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """task-route: the one way a lead picks the seat for a task. Cheapest qualified
 seat first, then the least loaded, and Opus only when the task is marked as
-needing it (Rico 2026-10-08: "the only ones that get used all the time are the
+needing it (The operator 2026-10-08: "the only ones that get used all the time are the
 expensive ones, and the inexpensive ones which do just as good of a job sit
 there idle doing nothing"). It owns the pick; the board reads belong to
 `seat-load`, which it runs as a subprocess. It makes no HTTP call itself.

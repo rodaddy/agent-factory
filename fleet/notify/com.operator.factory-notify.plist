@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.rico.factory-notify</string>
+	<string>com.operator.factory-notify</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/opt/homebrew/opt/node@24/bin/node</string>
-		<string>/opt/factory-notify/rico-notify.ts</string>
+		<string>/opt/factory-notify/operator-notify.ts</string>
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>
-		<key>RICO_NOTIFY_ENV_FILE</key>
+		<key>OPERATOR_NOTIFY_ENV_FILE</key>
 		<string>/opt/factory-notify/env</string>
-		<key>RICO_NOTIFY_STATE</key>
+		<key>OPERATOR_NOTIFY_STATE</key>
 		<string>/opt/factory-notify/state.json</string>
 	</dict>
 	<key>StartInterval</key>

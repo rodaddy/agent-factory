@@ -1,11 +1,11 @@
 ---
 name: k3s-review
-description: "How Nagatha decides a pull request on rtech/k3s-deploy: match its sop: line to exactly one rtech-infra SOP, confirm the diff stays inside that SOP and sop-gate is green on the head, judge whether it would break k3s, then merge it and link the lane's receipt, or send it to Rico with NEEDS RICO."
+description: "How Nagatha decides a pull request on rtech/k3s-deploy: match its sop: line to exactly one rtech-infra SOP, confirm the diff stays inside that SOP and sop-gate is green on the head, judge whether it would break k3s, then merge it and link the lane's receipt, or send it to the operator with NEEDS OPERATOR."
 ---
 
 # k3s-review
 
-You hold a board task for a pull request on `rtech/k3s-deploy`. Rico does not
+You hold a board task for a pull request on `rtech/k3s-deploy`. The operator does not
 review k3s changes; you do. You merge what is valid, viable and safe, and send
 up only what would break k3s or that no procedure covers.
 
@@ -85,7 +85,7 @@ Read them over the Forge API (`/repos/rtech/rtech-infra/contents/...`).
    how to make it valid, the corrected request, the author mentioned. A new
    push starts again at step 0.
    **Would break k3s, or needs what you cannot do:** do not merge. On the PR
-   assign `rico` (Rico's
+   assign `operator` (The operator's
    own login, and the one that watches this repo; `rodaddy` is an
    organization and cannot be assigned):
 
@@ -94,11 +94,11 @@ Read them over the Forge API (`/repos/rtech/rtech-infra/contents/...`).
      -H "Authorization: token $FORGEJO_TOKEN_RTECH" \
      -H "Content-Type: application/json" \
      "$FORGEJO_API_URL/repos/rtech/k3s-deploy/issues/<n>" \
-     -d '{"assignees":["rico"]}'
+     -d '{"assignees":["operator"]}'
    ```
 
    Anything outside `2xx` means he was not assigned: say so in the comment
-   and go on, do not try another login. Post ONE comment starting `NEEDS RICO:`
+   and go on, do not try another login. Post ONE comment starting `NEEDS OPERATOR:`
    with what you found (the SOP id or its absence, the files, the gate
    result, and the risk in one paragraph). Set your board task `blocked` with
    the board as owner:
@@ -107,7 +107,7 @@ Read them over the Forge API (`/repos/rtech/rtech-infra/contents/...`).
    curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
      -H "Content-Type: application/json" \
      "$PAPERCLIP_API_URL/api/issues/<task id>" \
-     -d '{"status":"blocked","unblockDescriptor":{"owner":"board","action":"NEEDS RICO on <owner/repo>#<n>: <comment url>"}}'
+     -d '{"status":"blocked","unblockDescriptor":{"owner":"board","action":"NEEDS OPERATOR on <owner/repo>#<n>: <comment url>"}}'
    ```
 
 7. **Valid, viable and safe:** merge as yourself, bound to the head:
@@ -141,7 +141,7 @@ Read them over the Forge API (`/repos/rtech/rtech-infra/contents/...`).
 - Edit an SOP, `index.json` or the `sop-gate` scripts except by your own
   rtech-infra pull request the decision ladder decides (`company-conduct`,
   "Changing a rule"). Edit branch protection or a secret: a PR that needs one of those
-  is Rico's (step 6).
+  is the operator's (step 6).
 - Merge a change no SOP covers, merge on a red or missing gate, or merge a
   head you did not check.
 - Decide a pull request on any repo but `rtech/k3s-deploy`, or widen what an

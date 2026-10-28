@@ -5,7 +5,7 @@ import { reviewPrOnce } from "../../fleet/plugins/forge-pr/sweep.js";
 // Code-only review: with codeOnlyReview on, each reviewer of a
 // mixed PR is told which changed paths are docs and reviews only the rest.
 const SHA = "a".repeat(40);
-const BLOCK = "Docs, not reviewed (Rico 2026-10-07)";
+const BLOCK = "Docs, not reviewed (The operator 2026-10-07)";
 const b64 = (s: string) => Buffer.from(s).toString("base64");
 
 // A file at head: [path, mode, first line].
@@ -88,7 +88,7 @@ const ev = () => {
 				html_url: "https://forge.example.internal/rodaddy/demo/pulls/7",
 				title: "Mixed",
 				body: `## Test plan\n${F3}\nbun test\n${F3}\n\n## Backout\nRevert it.\n`,
-				user: { login: "rico" },
+				user: { login: "operator" },
 			},
 		},
 		["rodaddy/demo"],

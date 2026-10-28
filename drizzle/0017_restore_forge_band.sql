@@ -1,6 +1,6 @@
 -- sf#557: restore the factory `forge` band 9101-9150 as the Forge runner fleet.
 --
--- Ruling (Rico, 2026-09-02): "There should be a fleet of those dispatched by the
+-- Ruling (The operator, 2026-09-02): "There should be a fleet of those dispatched by the
 -- watcher as needed, like five to ten of them." The 9101-9150 band IS the
 -- Forgejo CI/CD runner fleet; a single runner container was never the design. This SUPERSEDES
 -- the retire reading of the 2026-08-28 ruling that shipped as sf#457 and

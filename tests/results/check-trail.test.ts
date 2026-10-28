@@ -370,7 +370,7 @@ describe("buildProposalPlan check trail", () => {
  */
 describe("agent signature line on proposal bodies", () => {
 	const SIG_PREFIX =
-		"**agent:** rodaddy-watcher · model unattested · seat software-factory watcher (CT101) · ";
+		"**agent:** rodaddy-watcher · model unattested · seat software-factory watcher (runner-01) · ";
 
 	test("the proposal body's FIRST line is the signature", () => {
 		const plan = buildProposalPlan(157, "main", "abc1234", {

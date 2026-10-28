@@ -174,7 +174,7 @@ export function reviewerTask(event, agentId, name, docs = []) {
 		...(skip
 			? [
 					"",
-					"Docs, not reviewed (Rico 2026-10-07): review only the other changed paths. These are non-code:",
+					"Docs, not reviewed (The operator 2026-10-07): review only the other changed paths. These are non-code:",
 					...docs.map((p) => `- \`${p}\``),
 				]
 			: []),
@@ -300,7 +300,7 @@ export const REVIEW_ROUND_LIMIT = 2;
 // The warning for a PR that has had `rounds` review rounds. The board sweep
 // and the tests match the "ROUND LIMIT:" prefix.
 export function roundLimitText(rounds) {
-	return `ROUND LIMIT: this pull request has had ${rounds} review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (Rico, 2026-10-08).`;
+	return `ROUND LIMIT: this pull request has had ${rounds} review rounds. Fix any open P0 or P1 findings before you push again. Review continues on every new head (The operator, 2026-10-08).`;
 }
 
 // The title prefix every review task of this PR carries; the trailing " @ "

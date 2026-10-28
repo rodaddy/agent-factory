@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { parseForgeSlots, parseListedBoxes } from "../../src/runner/transport-boxes";
 
 /** Verbatim capture, 2026-08-17, read-only `runner_list`. Two hosts, both unstamped. */
-const LIVE_ENVELOPE = `{"success":true,"result":{"ok":true,"exit_code":0,"stdout":"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO\\n[node05] 9002       stopped    destroyed    CT116               -                                            -\\n[node06] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO\\n[node06] 9004       stopped    destroyed    CT124               -                                            -\\n","stderr":"","cmd":"/opt/dev/rtech-infra/scripts/runner-boxes list"}}`;
+const LIVE_ENVELOPE = `{"success":true,"result":{"ok":true,"exit_code":0,"stdout":"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO\\n[node05] 9002       stopped    destroyed    runner-16               -                                            -\\n[node06] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO\\n[node06] 9004       stopped    destroyed    runner-24               -                                            -\\n","stderr":"","cmd":"/opt/dev/rtech-infra/scripts/runner-boxes list"}}`;
 
 describe("parseListedBoxes — the real captured fixture", () => {
 	test("parses both hosts' rows out of the live envelope", () => {
@@ -32,7 +32,7 @@ describe("parseListedBoxes — the real captured fixture", () => {
 	test("carries status and name off the fixed-width row", () => {
 		const [first] = parseListedBoxes(LIVE_ENVELOPE);
 		expect(first?.status).toBe("stopped");
-		expect(first?.name).toBe("CT116");
+		expect(first?.name).toBe("runner-16");
 	});
 
 	test("skips the per-host header line that repeats for every host", () => {
@@ -52,8 +52,8 @@ describe("parseListedBoxes — stamped and empty-Lock rows", () => {
 	const stamped = envelope(
 		[
 			"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO",
-			"[node05] 9007       running                 CT125               rw-pr-review-abc123                          2026-08-17T04:10:00Z",
-			"[node05] 9008       running    backup       CT126               rw-triage-def456                             2026-08-17T04:12:00Z",
+			"[node05] 9007       running                 runner-25               rw-pr-review-abc123                          2026-08-17T04:10:00Z",
+			"[node05] 9008       running    backup       runner-26               rw-triage-def456                             2026-08-17T04:12:00Z",
 		].join("\\n"),
 	);
 
@@ -64,13 +64,13 @@ describe("parseListedBoxes — stamped and empty-Lock rows", () => {
 		expect(box?.spawnIso).toBe("2026-08-17T04:10:00Z");
 		// The empty-Lock shift defect surfaces here first: a left-positional parser
 		// reads Name out of the Lock slot and returns "rw-pr-review-abc123".
-		expect(box?.name).toBe("CT125");
+		expect(box?.name).toBe("runner-25");
 	});
 
 	test("reads a LOCKED row's columns without shifting", () => {
 		const box = parseListedBoxes(stamped).find((b) => b.vmid === 9008);
 		expect(box?.jobId).toBe("rw-triage-def456");
-		expect(box?.name).toBe("CT126");
+		expect(box?.name).toBe("runner-26");
 		expect(box?.status).toBe("running");
 	});
 });
@@ -78,7 +78,7 @@ describe("parseListedBoxes — stamped and empty-Lock rows", () => {
 describe("parseListedBoxes — envelope and input tolerance", () => {
 	test("parses a BARE (non-enveloped) table string", () => {
 		const bare =
-			"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO\n[node05] 9009       running                 CT127               rw-x-1                                       2026-08-17T05:00:00Z";
+			"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO\n[node05] 9009       running                 runner-27               rw-x-1                                       2026-08-17T05:00:00Z";
 		const [box] = parseListedBoxes(bare);
 		expect(box?.vmid).toBe(9009);
 		expect(box?.jobId).toBe("rw-x-1");
@@ -107,8 +107,8 @@ describe("parseListedBoxes — the #78 inventory guard SURFACES rather than drop
 	const withUnknown = envelope(
 		[
 			"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO",
-			"[node05] 9002       running                 CT116               rw-known-1                                   2026-08-17T04:00:00Z",
-			"[node05] 9900       running                 CT128               rw-unknown-1                                 2026-08-17T04:01:00Z",
+			"[node05] 9002       running                 runner-16               rw-known-1                                   2026-08-17T04:00:00Z",
+			"[node05] 9900       running                 runner-28               rw-unknown-1                                 2026-08-17T04:01:00Z",
 		].join("\\n"),
 	);
 
@@ -130,7 +130,7 @@ function envelope(innerStdout: string): string {
 
 const SLOT_SAMPLE = [
 	"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO",
-	"[node05] 9102       running                 CT121               -                                            -",
+	"[node05] 9102       running                 runner-21               -                                            -",
 	"[slot] vmid=9106 status=absent lane=general",
 	"[slot] vmid=9102 node=node02 status=running lane=general",
 	"[slot] vmid=9103 node=- status=unknown lane=general",

@@ -6,9 +6,9 @@ description: "How the Head of Review (Smythe) hands each review to ONE PAIR of C
 # review-dispatch
 
 You are the Head of Review. Every review, every round, every slice goes to ONE
-PAIR: one Code Reviewer on an Anthropic model and one on a GPT model (Rico,
+PAIR: one Code Reviewer on an Anthropic model and one on a GPT model (The operator,
 2026-10-08: "anthropic versus GPT ... go wide, not deep"). There are no leads,
-no seniors and no juniors. The reviewers comment; the author fixes. Rico,
+no seniors and no juniors. The reviewers comment; the author fixes. The operator,
 2026-10-06: "why are people waiting on reviews?" A review that sits on
 you is the failure this skill exists to stop.
 
@@ -89,7 +89,7 @@ and post nothing.
    the least-loaded seat of the SAME family that is not the author, even if
    it is paused or `error`; the task waits in backlog until the seat runs
    (the forge-pr plugin's `pickSeat` does the same). Never the other family
-   (the pair is one Sol and one Sonnet review, Rico 2026-10-13), never the
+   (the pair is one Sol and one Sonnet review, the operator 2026-10-13), never the
    author.
 4. Record every pair issue as a BLOCKER of the parent, keep the parent
    assigned to you, set it `blocked`, and comment one line:
@@ -117,7 +117,7 @@ and post nothing.
    - Class C `smythe review: <why>` (a reviewer's `escalate:` line, a
      `SMYTHE_REPOS` repo, a head with no status, or Jev below the bar):
      decide it, below.
-   - Class B (`needs-rico`): request the board approval, below.
+   - Class B (`needs-operator`): request the board approval, below.
    - Class C `checks: pending`: run `merge-check` again after 10 minutes, at
      most 3 times; still pending, create ONE board task
      `Checks not green: <owner/repo>#<n> @ <sha7>` assigned to Greene (CI Engineer)
@@ -160,13 +160,13 @@ Only these. Each is one action; then you hand it back.
 - **A review is stale**: the head moved while the pair worked. Cancel the
   parent per step 1; the new head's parent is a new review.
 - **A PR is class C `smythe review: <why>`, or a `Decision:` task is yours.**
-  Decide it as below. Class B (`needs-rico`) is the only board approval: you
+  Decide it as below. Class B (`needs-operator`) is the only board approval: you
   request it, below.
 
 ## Deciding a `smythe review:` PR
 
 You lean toward approval. Read the repo's recent merged PRs and the
-precedents file `$FLEET_STATE_DIR/merge-go-precedents.jsonl` (what Rico or an
+precedents file `$FLEET_STATE_DIR/merge-go-precedents.jsonl` (what the operator or an
 author forced through before), and ask whether past changes like this one
 merged without trouble. Post your answer on the parent review issue as one
 comment that opens with this head's review heading, then the decision line:
@@ -181,9 +181,9 @@ If it fails there, the line is `smythe: kickback: <why>`, under the same
 heading. `merge-check` counts a decision only under the heading naming the
 current head, and only on the parent titled exactly
 `Review <owner/repo>#<n> @ <sha7>`: a bare `smythe: approve` decides nothing
-and the PR stays class C. The reason goes to the originator, never to Rico.
+and the PR stays class C. The reason goes to the originator, never to the operator.
 After `smythe: approve`, file the Merge task and close the parent as in step
-5. If the author or Rico then says `just do it` on the Forge PR after a
+5. If the author or the operator then says `just do it` on the Forge PR after a
 kickback, it merges, and the override becomes a precedent Jev reads next time.
 Nobody writes that file by hand.
 
@@ -200,7 +200,7 @@ curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
 ```
 
 Then post ONE comment on the parent whose first line is
-`TELL RICO: Rico's class on <owner/repo>#<n>: <title> <direct link to that one board approval>`,
+`TELL OPERATOR: The operator's class on <owner/repo>#<n>: <title> <direct link to that one board approval>`,
 built from the id the request returned, and set the parent `in_review`. The
 go is bound to `headSha`; a newer push voids it.
 

@@ -164,7 +164,7 @@ describe("rm-recursive follows the home of the user the guard runs as", () => {
 	const as = (home: string, command: string) =>
 		runRaw(JSON.stringify({ tool_name: "Bash", tool_input: { command } }), "infra", home);
 	const NAGATHA = "/home/nagatha";
-	const RICO = "/home/operator";
+	const OPERATOR = "/home/operator";
 	for (const cmd of [
 		"rm -rf /home/nagatha/work/sof-2498",
 		"rm -r /home/nagatha/work/wt/rtech/rtech-infra/x",
@@ -189,13 +189,13 @@ describe("rm-recursive follows the home of the user the guard runs as", () => {
 	]) {
 		test(`HOME=${NAGATHA} refuses: ${cmd}`, () => expectDeny(as(NAGATHA, cmd), "rm-recursive"));
 	}
-	test(`HOME=${RICO} allows fleet-work/<project>/<dir> and work/<dir>`, () => {
-		expectAllow(as(RICO, "rm -rf /home/operator/fleet-work/infra/tmp"));
-		expectAllow(as(RICO, "rm -rf /home/operator/work/x"));
+	test(`HOME=${OPERATOR} allows fleet-work/<project>/<dir> and work/<dir>`, () => {
+		expectAllow(as(OPERATOR, "rm -rf /home/operator/fleet-work/infra/tmp"));
+		expectAllow(as(OPERATOR, "rm -rf /home/operator/work/x"));
 	});
-	test(`HOME=${RICO} refuses a whole project folder and another user's work`, () => {
-		expectDeny(as(RICO, "rm -rf /home/operator/fleet-work/infra"), "rm-recursive");
-		expectDeny(as(RICO, "rm -rf /home/nagatha/work/x"), "rm-recursive");
+	test(`HOME=${OPERATOR} refuses a whole project folder and another user's work`, () => {
+		expectDeny(as(OPERATOR, "rm -rf /home/operator/fleet-work/infra"), "rm-recursive");
+		expectDeny(as(OPERATOR, "rm -rf /home/nagatha/work/x"), "rm-recursive");
 	});
 	test("the refusal names the allowed shape for the user it runs as", () => {
 		const r = as(NAGATHA, "rm -rf /home/nagatha/src/rtech");

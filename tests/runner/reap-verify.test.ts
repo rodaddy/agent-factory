@@ -123,7 +123,7 @@ describe("reap — ambiguity fails OPEN on the already-proven DB claim", () => {
 			await seedRunnerBoxes(db);
 			expect(await claimRunnerBox(db, VMID, HOLDER)).toBe(true);
 			const transport = verifyTransport(async () => [
-				listed({ vmid: 9002, jobId: "rw-other", name: "CT116" }),
+				listed({ vmid: 9002, jobId: "rw-other", name: "runner-16" }),
 			]);
 
 			expect(await reap(db, transport, VMID, HOLDER)).toBe("reaped");
@@ -206,7 +206,7 @@ await withTestDb(async (db) => {
   const outcome = await reap(db, {
     needed: async () => ({ ok: false, refused: true, reason: "n/a" }),
     run: async () => {},
-    list: async () => [{ vmid, status: "running", name: "CT118", jobId: ours, spawnIso: null }],
+    list: async () => [{ vmid, status: "running", name: "runner-18", jobId: ours, spawnIso: null }],
     done: async (doneVmid, jobId) => {
       doneCalls.push({ vmid: doneVmid, jobId });
       return { refused: true, ownerJobId: "rw-infra-static-OTHER" };

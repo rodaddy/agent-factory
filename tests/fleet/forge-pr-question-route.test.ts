@@ -89,12 +89,12 @@ describe("question-route", () => {
 		expect(t?.description).toContain("- main");
 		expect(t?.description).toContain("- release/2026-10");
 		expect(t?.description).toContain(
-			"Decide and post the decision as a comment on the origin task. A question that only Rico may decide goes to him with TELL RICO:.",
+			"Decide and post the decision as a comment on the origin task. A question that only the operator may decide goes to him with TELL OPERATOR:.",
 		);
 		expect(h.comments).toEqual([
 			{
 				id: "iss-7",
-				body: "Routed to Smythe in SOF-901 (Rico 2026-10-07: the factory answers seat questions).",
+				body: "Routed to Smythe in SOF-901 (The operator 2026-10-07: the factory answers seat questions).",
 			},
 		]);
 		expect(h.state.get("question:int-1")).toEqual({ issueId: "new-1" });
@@ -111,7 +111,7 @@ describe("question-route", () => {
 	});
 	test("a question created by a board user is ignored", async () => {
 		const h = harness([issue(7)], {
-			"iss-7": [question("int-1", { createdByAgentId: null, createdByUserId: "user-rico" })],
+			"iss-7": [question("int-1", { createdByAgentId: null, createdByUserId: "user-operator" })],
 		});
 		await routeQuestions(h.deps);
 		expect(h.created.length).toBe(0);

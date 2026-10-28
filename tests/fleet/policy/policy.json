@@ -20,7 +20,7 @@
         "doesNotDefend": "Messages the rule cannot read (dynamic `$VAR`, missing files, stdin), commits made outside the harness, or a false Agent line; the commit author is still whatever git config says. On an employee box the seat in the Agent line is not checked against the token that pushes; FORGE_LOGIN and FORGEJO_TOKEN are the boundary."
       },
       "owner": "development",
-      "ruling": "Operator ruling on rodaddy/development#848; Rico 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
+      "ruling": "Operator ruling on rodaddy/development#848; the operator 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
       "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/identity.ts", "bash-guard": "fleet/hooks/bash-guard" }
     },
     {
@@ -31,18 +31,18 @@
         "doesNotDefend": "Cluster changes through the API with curl, another client, a script file, or a kubeconfig used outside the harness; the boundary is the cluster credentials. On an employee box, the infra seat's writes are allowed by design; the corpus rows run as a non-infra employee (`reviewer`), so the infra allowance is pinned by bash-guard's own tests, not by a row."
       },
       "owner": "development",
-      "ruling": "Operator ruling 2026-10-03 (#845/#860); Rico 2026-10-06 (sf#1642: Paperclip employees match the local rules); Rico 2026-10-06 (sf#1643: allow the infra seat, fail closed on an unknown option)",
+      "ruling": "Operator ruling 2026-10-03 (#845/#860); the operator 2026-10-06 (sf#1642: Paperclip employees match the local rules); the operator 2026-10-06 (sf#1643: allow the infra seat, fail closed on an unknown option)",
       "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/cluster.ts", "bash-guard": "fleet/hooks/bash-guard" }
     },
     {
       "id": "model-gate",
-      "intent": "`claude -p` (print mode, also via claudex) is never run from Development or _tmp, and Fable runs only when Rico selects it. On a Paperclip employee box, `claude -p` / `claudex ... -p` from an employee run is refused; the Fable clause stays Mac-only.",
+      "intent": "`claude -p` (print mode, also via claudex) is never run from Development or _tmp, and Fable runs only when the operator selects it. On a Paperclip employee box, `claude -p` / `claudex ... -p` from an employee run is refused; the Fable clause stays Mac-only.",
       "threatModel": {
         "defends": "A session launching a headless `claude -p`/`claudex ... -p` worker, or pinning a Fable model in a Workflow or Agent call, by its own choice. On an employee box, an employee spawning its own nested headless Claude run instead of working in its own seat.",
         "doesNotDefend": "A print-mode run started from a script file, an alias, or another process the Bash line does not show, or a model chosen outside the `model:` spellings the rule reads. On an employee box, the Paperclip runtime's own `claude` launch of the employee is outside the employee's Bash and is not checked."
       },
       "owner": "development",
-      "ruling": "Operator rulings 2026-10-05 (no claude -p; Fable only when Rico selects it); Rico 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
+      "ruling": "Operator rulings 2026-10-05 (no claude -p; Fable only when the operator selects it); the operator 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
       "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/model-gate.ts", "bash-guard": "fleet/hooks/bash-guard" }
     },
     {
@@ -53,7 +53,7 @@
         "doesNotDefend": "A write the line does not show (a script file, a tool that picks /tmp itself, an interpreter one-liner), a cd or TMPDIR value spelled with a variable, or anything run outside the harness; the boundary is the OS user and its sandbox. On an employee box, a path with any other variable is judged only by its literal text before the variable (known holes in sf#1492)."
       },
       "owner": "development",
-      "ruling": "Operator rulings 2026-09-21 and 2026-10-05 (never /tmp, forced in dev-rules and bash-guard through one table); Rico 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
+      "ruling": "Operator rulings 2026-09-21 and 2026-10-05 (never /tmp, forced in dev-rules and bash-guard through one table); the operator 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
       "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/no-tmp.ts", "bash-guard": "fleet/hooks/bash-guard" }
     },
     {
@@ -97,7 +97,7 @@
         "doesNotDefend": "A URL built from a $VAR, a curl -K config holding the URL, scripts the Bash line does not show, or other HTTP clients. The boundary is the harness account's token scopes; on an employee box, the employee's FORGEJO_TOKEN scopes."
       },
       "owner": "development",
-      "ruling": "Rico ask 2026-10-05 (rodaddy/development#979); Rico 2026-10-06 (sf#1642/sf#1482: Paperclip employees match the local rules)",
+      "ruling": "The operator ask 2026-10-05 (rodaddy/development#979); the operator 2026-10-06 (sf#1642/sf#1482: Paperclip employees match the local rules)",
       "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/forge-api.ts", "bash-guard": "fleet/hooks/bash-guard" }
     }
   ]

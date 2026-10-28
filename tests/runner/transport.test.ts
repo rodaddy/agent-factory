@@ -1333,7 +1333,7 @@ describe("forge band stop budget", () => {
 
 const SLOT_SAMPLE = [
 	"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO",
-	"[node05] 9102       running                 CT121               -                                            -",
+	"[node05] 9102       running                 runner-21               -                                            -",
 	"[slot] vmid=9106 status=absent lane=general",
 	"[slot] vmid=9102 node=node02 status=running lane=general",
 	"[slot] vmid=9103 node=- status=unknown lane=general",
