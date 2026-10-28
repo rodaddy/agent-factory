@@ -75,7 +75,7 @@ const c = (id: number, login: string, hour: number, body: string) => ({
 });
 const COMMENTS: Record<number, unknown[]> = {
 	1: [
-		c(1, "rico", 1, "verdict: fix-first"),
+		c(1, "operator", 1, "verdict: fix-first"),
 		c(2, "sf-smythe", 2, "## Review\nverdict: fix-first\n"),
 		c(3, "sf-smythe", 3, "the last verdict: approve was early"),
 		c(4, "factory", 5, "verdict: approve"),

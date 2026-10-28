@@ -7,7 +7,7 @@
  */
 
 /** First line of a board comment an agent writes to have the owner told once. */
-export const TELL_MARKER = "TELL RICO:";
+export const TELL_MARKER = "TELL OPERATOR:";
 
 export interface Item {
 	key: string;
@@ -81,7 +81,7 @@ function ms(iso: string | null | undefined): number {
 	return iso ? Date.parse(iso) : Number.NaN;
 }
 
-/** Issues blocked on the board itself: every NEEDS RICO and every question to him. */
+/** Issues blocked on the board itself: every NEEDS OPERATOR and every question to him. */
 export function blockedItems(issues: IssueRow[]): Item[] {
 	const items: Item[] = [];
 	for (const issue of issues) {
@@ -99,7 +99,7 @@ export function blockedItems(issues: IssueRow[]): Item[] {
 	return items;
 }
 
-/** Pending board approvals: a class B go request carries no NEEDS RICO. */
+/** Pending board approvals: a class B go request carries no NEEDS OPERATOR. */
 export function approvalItems(approvals: ApprovalRow[]): Item[] {
 	const items: Item[] = [];
 	for (const approval of approvals) {

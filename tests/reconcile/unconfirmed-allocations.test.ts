@@ -70,7 +70,7 @@ function box(overrides: Partial<ListedBox> = {}): ListedBox {
 	return {
 		vmid: 9001,
 		status: "running",
-		name: "CT118",
+		name: "runner-18",
 		jobId: null,
 		spawnIso: null,
 		...overrides,

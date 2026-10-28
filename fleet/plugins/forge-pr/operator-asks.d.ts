@@ -1,38 +1,40 @@
-// Types for rico-asks.js (sf#1375: every ask to the owner is counted and filed).
-export const RICO_ASK_RULING: string;
-export function isRicoAsk(approval: unknown): boolean;
-export interface RicoAskDay {
+// Types for operator-asks.js (sf#1375: every ask to the owner is counted and filed).
+export const OPERATOR_ASK_RULING: string;
+export function isOperatorAsk(approval: unknown): boolean;
+export interface OperatorAskDay {
 	day: string;
 	count: number;
 	reasons: string[];
 }
-export interface RicoAskCounts {
+export interface OperatorAskCounts {
 	last24h: number;
-	days: RicoAskDay[];
+	days: OperatorAskDay[];
 }
 /** Pure: asks per UTC day with reasons, and the count in the 24 h before now. */
-export function ricoAskCounts(approvals: unknown[], now: number): RicoAskCounts;
-export interface RicoAskIssue {
+export function operatorAskCounts(approvals: unknown[], now: number): OperatorAskCounts;
+export interface OperatorAskIssue {
 	title: string;
 	description: string;
 	assigneeAgentId: string;
 	status: "todo";
 	priority: "high";
 }
-export function ricoAskIssue(
+export function operatorAskIssue(
 	approval: { id: string; payload?: unknown },
 	agentName: string | null,
 	bishopId: string,
-): RicoAskIssue;
-export interface RicoAskDeps {
+): OperatorAskIssue;
+export interface OperatorAskDeps {
 	approvals: { list(input: { companyId: string; status?: string | null }): Promise<unknown[]> };
 	companyId: string;
 	now: () => number;
 	stateGet: (key: string) => Promise<unknown>;
 	stateSet: (key: string, value: unknown) => Promise<void>;
-	createTask: (task: RicoAskIssue) => Promise<{ id: string }>;
+	createTask: (task: OperatorAskIssue) => Promise<{ id: string }>;
 	findAgent: (login: string) => Promise<string | null>;
 	agentName?: (id: string | null) => Promise<string | null>;
 	log: (line: string) => void;
 }
-export function fileRicoAsks(deps: RicoAskDeps): Promise<RicoAskCounts & { filed: number }>;
+export function fileOperatorAsks(
+	deps: OperatorAskDeps,
+): Promise<OperatorAskCounts & { filed: number }>;

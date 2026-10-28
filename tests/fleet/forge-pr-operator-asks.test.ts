@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ricoAskCounts } from "../../fleet/plugins/forge-pr/rico-asks.js";
+import { operatorAskCounts } from "../../fleet/plugins/forge-pr/operator-asks.js";
 import { runSweep } from "../../fleet/plugins/forge-pr/sweep.js";
 
 // sf#1375: every request_board_approval is an ask to the owner, counted and filed
@@ -52,21 +52,21 @@ function harness(approvals: unknown[]) {
 	};
 }
 
-describe("Rico-ask filing in the forge sweep", () => {
+describe("The operator-ask filing in the forge sweep", () => {
 	test("a new approval yields one Bishop issue naming the agent, title, reasons and the ask", async () => {
 		const h = harness([ask("ap-1", "2026-10-06T11:58:00Z")]);
 		await runSweep(h.deps);
 		expect(h.created.length).toBe(1);
 		const issue = h.created[0];
-		expect(issue?.title).toBe("Rico was asked: Go on rodaddy/demo#4 at 1234567");
+		expect(issue?.title).toBe("The operator was asked: Go on rodaddy/demo#4 at 1234567");
 		expect(issue?.assigneeAgentId).toBe("agent-bishop");
 		expect(issue?.description).toContain("Requested by: Hicks");
 		expect(issue?.description).toContain("- checks pending");
 		expect(issue?.description).toContain(
-			"find the rule that sent this to Rico and open the PR that makes agents decide it",
+			"find the rule that sent this to the operator and open the PR that makes agents decide it",
 		);
 		expect(issue?.description).toContain("at most ~0.0001% of decisions reach him");
-		expect(h.logs).toContain("rico_asks count24h=1 filed=1");
+		expect(h.logs).toContain("operator_asks count24h=1 filed=1");
 	});
 	test("a second sweep yields no second issue for the same approval", async () => {
 		const h = harness([ask("ap-1", "2026-10-06T11:58:00Z")]);
@@ -74,29 +74,29 @@ describe("Rico-ask filing in the forge sweep", () => {
 		h.tick(5 * 60 * 1000);
 		await runSweep(h.deps);
 		expect(h.created.length).toBe(1);
-		expect(h.logs.filter((l) => l.startsWith("rico_asks "))).toEqual([
-			"rico_asks count24h=1 filed=1",
-			"rico_asks count24h=1 filed=0",
+		expect(h.logs.filter((l) => l.startsWith("operator_asks "))).toEqual([
+			"operator_asks count24h=1 filed=1",
+			"operator_asks count24h=1 filed=0",
 		]);
 	});
 	test("an approval that is not request_board_approval yields no issue", async () => {
 		const h = harness([ask("ap-1", "2026-10-06T11:58:00Z", { type: "hire_agent" })]);
 		await runSweep(h.deps);
 		expect(h.created.length).toBe(0);
-		expect(h.logs).toContain("rico_asks count24h=0 filed=0");
+		expect(h.logs).toContain("operator_asks count24h=0 filed=0");
 	});
 	test("an approval created before the last sweep is not filed again", async () => {
 		const h = harness([ask("ap-old", "2026-10-05T09:00:00Z")]);
-		h.state.set("ricoasks:since", { at: NOW - 5 * 60 * 1000 });
+		h.state.set("operatorasks:since", { at: NOW - 5 * 60 * 1000 });
 		await runSweep(h.deps);
 		expect(h.created.length).toBe(0);
 	});
 });
 
-describe("ricoAskCounts", () => {
+describe("operatorAskCounts", () => {
 	test("the 24 h count is right across a UTC day boundary, with per-day reasons", () => {
 		const now = Date.parse("2026-10-06T03:00:00Z");
-		const c = ricoAskCounts(
+		const c = operatorAskCounts(
 			[
 				ask("a", "2026-10-05T02:59:00Z"), // 24 h + 1 min ago: outside
 				ask("b", "2026-10-05T03:01:00Z", { payload: { title: "Go on x/y#1 at abcdef1" } }),

@@ -98,7 +98,7 @@ describe("buildMap declared columns", () => {
 		expect(uat?.declared.repo).toBe("rodaddy/linkedin-automation");
 		expect(uat?.declared.ref).toBe(shortRef(entry.accepted.ref));
 		expect(uat?.declared.on).toBe("2026-09-07");
-		expect(uat?.declared.by).toBe("rico");
+		expect(uat?.declared.by).toBe("operator");
 		expect(uat?.declared.state).toBe("active");
 		expect(uat?.declared.merge).toBe("auto");
 		expect(uat?.declared.image).toBe(ACCEPTED);

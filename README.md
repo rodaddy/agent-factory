@@ -86,6 +86,7 @@ cd agent-factory
 bun install
 cp env.example .env                            # fill in; never commit it
 cp config/repos.example.yml config/repos.yml   # list your repositories
+bun run db:migrate                             # create the schema in DATABASE_URL
 bun run src/index.ts doctor --config config/repos.yml
 bun run src/index.ts reconcile once --config config/repos.yml --shadow
 bun run src/index.ts watch
@@ -100,6 +101,16 @@ removed; `_DOCS/export-notes.md` lists them.
 
 The repo is MIT licensed: use it, change it and ship it, keeping the
 copyright notice.
+
+## How it was built
+
+The service began on 2026-07-19 as a watcher that reconciled repositories
+every 15 minutes, and grew over 2,500 commits into a company of AI agent
+seats with code-enforced gates. It was built mostly by AI coding agents and,
+from October 2026, reviewed by its own seats. Along the way runner boxes gave
+way to Forgejo Actions, a review council was added and removed within three
+days, and judgment calls moved into calibrated classifiers. The dated account
+is in [docs/BUILD-STORY.md](docs/BUILD-STORY.md).
 
 ## Project status
 

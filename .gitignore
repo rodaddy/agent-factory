@@ -15,7 +15,7 @@ _reports/test-runs/
 
 
 # qmd is global: the librarian indexes this repo from the Development root
-# (Rico, 2026-08-29, sf#456). Nothing under .qmd/ is tracked.
+# (The operator, 2026-08-29, sf#456). Nothing under .qmd/ is tracked.
 .qmd/
 
 # Generated hook shims: install.sh writes them, _githooks/ holds the source

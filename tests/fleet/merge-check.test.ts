@@ -7,7 +7,7 @@
  *   class, each status state, the path rules (renames included), and that
  *   neither token reaches the output. `MERGE_CHECK_UNDER_TEST` points the suite
  *   at a mutated copy of the script. No path, repo or opener decides the class.
- *  Since sf#1493 class B is only `needs-rico`, and client/* is class C
+ *  Since sf#1493 class B is only `needs-operator`, and client/* is class C
  *   with no Forge or board request. The council is dissolved:
  *   what a lead cannot decide waits on Smythe.
  */
@@ -120,7 +120,7 @@ const PRS: Record<string, Pr> = {
 	"o/r#3": { files: [".forgejo/workflows/x.yml"], board: approve },
 	"o/r#4": { board: [{ by: LEAD, verdict: "fix-first" }] },
 	"o/r#5": { board: approve, head: OTHER },
-	"o/r#6": { board: approve, labels: ["needs-rico"] },
+	"o/r#6": { board: approve, labels: ["needs-operator"] },
 	// The lead said fix-first; the author then says approve, on Forge and on the board.
 	"o/r#7": {
 		board: [
@@ -623,7 +623,7 @@ beforeAll(() => {
 				merged: pr.merged ?? false,
 				head: { sha: pr.head ?? SHA },
 				labels: (pr.labels ?? []).map((name) => ({ name })),
-				user: { login: pr.author ?? "rico" },
+				user: { login: pr.author ?? "operator" },
 				body: pr.body ?? DEFAULT_BODY,
 				...(pr.noBase
 					? {}
@@ -817,7 +817,7 @@ describe("merge-check", () => {
 		expect(r.json.checks).toBe("red");
 		expect(r.json.reasons).toContain(`${MCP2CLI_CI} is failure`);
 	});
-	test("needs-rico label is class B", async () => {
+	test("needs-operator label is class B", async () => {
 		const r = await run("o/r", 6);
 		expect(r.json.class).toBe("B");
 		expect(r.json.mergeable).toBe(false);
@@ -913,7 +913,7 @@ describe("merge-check", () => {
 		expect(r.json.checks).toBe("red");
 		expect(r.json.reasons).toContain("factory/pr-review is failure");
 	});
-	test("a head with no factory status but green repo CI is not Rico's: class A, checks repo-ci", async () => {
+	test("a head with no factory status but green repo CI is not the operator's: class A, checks repo-ci", async () => {
 		const r = await run("st/none", 13);
 		expect(r.json.class).toBe("A");
 		expect(r.json.mergeable).toBe(true);
@@ -1025,7 +1025,7 @@ describe("merge-check", () => {
 	});
 });
 
-describe("merge-check PR-body gate (Rico, 2026-10-05)", () => {
+describe("merge-check PR-body gate (The operator, 2026-10-05)", () => {
 	const GATE = [
 		"missing backout plan",
 		"missing test plan",
@@ -1137,13 +1137,13 @@ describe("merge-check: no path decides the class", () => {
 // out by the agent". A head with no factory/* status is no longer the owner's class:
 // the repo's own CI meets the checks requirement when every status is success,
 // and a head with no status at all waits on Smythe. Class B is only the
-// needs-rico label.
+// needs-operator label.
 Object.assign(PRS, {
 	"st/repo-ci#140": { board: approve, statuses: { "policy-corpus / corpus": "success" } },
 	"st/bare#141": { board: approve, statuses: {} },
-	"st/repo-ci-rico#142": {
+	"st/repo-ci-operator#142": {
 		board: approve,
-		labels: ["needs-rico"],
+		labels: ["needs-operator"],
 		statuses: { "policy-corpus / corpus": "success" },
 	},
 	"st/repo-ci-red#143": {
@@ -1151,7 +1151,7 @@ Object.assign(PRS, {
 		statuses: { "policy-corpus / corpus": "success", "ci/build": "failure" },
 	},
 });
-describe("merge-check: no factory checks is not Rico's class", () => {
+describe("merge-check: no factory checks is not the operator's class", () => {
 	test("only repo-CI success statuses, no factory/*: not class B, checks repo-ci, class A", async () => {
 		const r = await run("st/repo-ci", 140);
 		expect(r.json.class).not.toBe("B");
@@ -1166,10 +1166,10 @@ describe("merge-check: no factory checks is not Rico's class", () => {
 		expect(r.json.reasons).toEqual(["smythe review: aaaaaaa carries no status"]);
 		expect(r.json.smythe.decision).toBe("pending");
 	});
-	test("needs-rico on a repo-CI head is class B, for the label alone", async () => {
-		const r = await run("st/repo-ci-rico", 142);
+	test("needs-operator on a repo-CI head is class B, for the label alone", async () => {
+		const r = await run("st/repo-ci-operator", 142);
 		expect(r.json.class).toBe("B");
-		expect(r.json.reasons).toEqual(["label needs-rico"]);
+		expect(r.json.reasons).toEqual(["label needs-operator"]);
 	});
 	test("a failing repo-CI status is not mergeable", async () => {
 		const r = await run("st/repo-ci-red", 143);
@@ -1201,7 +1201,7 @@ Object.assign(PRS, {
 	"st/sm-back#214": { board: approve, statuses: {}, smythe: [KICK] },
 	// 13:30 at -04:00 is 17:30Z, after the 17:00Z kickback.
 	"st/sm-author#215": kicked("sf-perkins", "2026-10-02T13:30:00-04:00"),
-	"st/sm-rico#216": kicked("rodaddy", "2026-10-02T17:30:00Z", "just do it"),
+	"st/sm-operator#216": kicked("rodaddy", "2026-10-02T17:30:00Z", "just do it"),
 	"st/sm-third#217": kicked("sf-bishop", "2026-10-02T17:30:00Z"),
 	"st/sm-early#218": kicked("sf-perkins", "2026-10-02T16:59:00Z"),
 	"st/sm-fake#219": {
@@ -1260,7 +1260,7 @@ describe("merge-check: no council, Smythe decides", () => {
 		expect(r.json.smythe.override).toBe("sf-perkins");
 	});
 	test("rodaddy's `just do it` after the kickback is class A", async () => {
-		const r = await run("st/sm-rico", 216);
+		const r = await run("st/sm-operator", 216);
 		expect(r.json.class).toBe("A");
 		expect(r.json.reasons).toEqual(["override by rodaddy"]);
 	});
@@ -1649,7 +1649,9 @@ Object.assign(PRS, {
 	},
 	[`${SF}#197`]: {
 		thread: [says(ADAMS, "approve")],
-		assigned: [{ by: "user-rico", to: ADAMS, at: "2026-10-02T12:30:00.000Z", actorType: "user" }],
+		assigned: [
+			{ by: "user-operator", to: ADAMS, at: "2026-10-02T12:30:00.000Z", actorType: "user" },
+		],
 	},
 	// The stamp is the actor TYPE and id together: a non-agent actor carrying Smythe's id is not Smythe.
 	[`${SF}#200`]: {
@@ -2428,7 +2430,7 @@ describe("merge-check: the blast-radius proof holds on every pair task (L-173, R
 // sf#1690: undoing a ruling that carries the owner's name stays with the owner
 // (company-conduct, "the owner only"). A removed diff line, the old side of an edit
 // included, citing the owner is class B; an added one is not.
-const RULE = "- Two rounds, then stop (Rico, 2026-10-02).";
+const RULE = "- Two rounds, then stop (The operator, 2026-10-02).";
 const ruleDiff = (lines: string) =>
 	`diff --git a/fleet/skills/x/SKILL.md b/fleet/skills/x/SKILL.md\n--- a/fleet/skills/x/SKILL.md\n+++ b/fleet/skills/x/SKILL.md\n@@ -3,3 +3,3 @@\n context\n${lines}`;
 Object.assign(PRS, {
@@ -2436,21 +2438,24 @@ Object.assign(PRS, {
 	"o/r#1691": { board: approve, diff: ruleDiff(`+${RULE}\n`) },
 	"o/r#1692": { board: approve, diff: null },
 	"o/r#1693": { board: approve, diff: ruleDiff("-old text\n+new text\n") },
-	"o/r#1694": { board: approve, labels: ["needs-rico"], diff: ruleDiff(`-${RULE}\n`) },
+	"o/r#1694": { board: approve, labels: ["needs-operator"], diff: ruleDiff(`-${RULE}\n`) },
 	"o/r#1695": {
 		board: approve,
 		diff: "diff --git a/docs/rules.md b/docs/rules.md\nBinary files a/docs/rules.md and b/docs/rules.md differ\n",
 	},
 	"o/r#1696": {
 		board: approve,
-		diff: ruleDiff("-per Rico ruling 2026-10-03\n+Three rounds.\n"),
+		diff: ruleDiff("-per the operator ruling 2026-10-03\n+Three rounds.\n"),
 	},
 });
 Object.assign(PRS, {
-	"o/r#1697": { board: approve, diff: ruleDiff("-2026-10-03 Rico ruled X\n+Changed policy.\n") },
+	"o/r#1697": {
+		board: approve,
+		diff: ruleDiff("-2026-10-03 the operator ruled X\n+Changed policy.\n"),
+	},
 	"o/r#1698": {
 		board: approve,
-		diff: ruleDiff("-Keep policy\u000b(Rico, 2026-10-02).\n+Changed policy.\n"),
+		diff: ruleDiff("-Keep policy\u000b(The operator, 2026-10-02).\n+Changed policy.\n"),
 	},
 	"o/r#1699": {
 		board: approve,
@@ -2461,7 +2466,7 @@ Object.assign(PRS, {
 Object.assign(PRS, {
 	"o/r#1700": {
 		board: approve,
-		diff: ruleDiff("--- Keep policy (Rico, 2026-10-02).\n+Changed policy.\n"),
+		diff: ruleDiff("--- Keep policy (The operator, 2026-10-02).\n+Changed policy.\n"),
 	},
 	"o/r#1701": {
 		board: approve,
@@ -2477,17 +2482,17 @@ Object.assign(PRS, {
 	"o/r#1704": { board: approve, filesUnreadable: "shape" },
 	"o/r#1705": {
 		board: approve,
-		diff: 'diff --git "a/docs/x\\t/rules.md" "b/docs/x\\t/rules.md"\n--- "a/docs/x\\t/rules.md"\n+++ "b/docs/x\\t/rules.md"\n@@ -7 +7 @@\n-Keep policy (Rico, 2026-10-02).\n+changed\n',
+		diff: 'diff --git "a/docs/x\\t/rules.md" "b/docs/x\\t/rules.md"\n--- "a/docs/x\\t/rules.md"\n+++ "b/docs/x\\t/rules.md"\n@@ -7 +7 @@\n-Keep policy (The operator, 2026-10-02).\n+changed\n',
 	},
 });
-describe("merge-check: a change to a Rico ruling is Rico's", () => {
+describe("merge-check: a change to an operator ruling is the operator's", () => {
 	const ROUTINE = "verdict approve; required statuses green; jev merge-go 0.85";
-	test("removing an SQL -- Rico ruling line is class B", async () => {
+	test("removing an SQL -- the operator ruling line is class B", async () => {
 		const r = await run("o/r", 1700);
 		expect(r.json.class).toBe("B");
 		expect(r.json.mergeable).toBe(false);
 		expect(r.json.reasons).toEqual([
-			"changes a Rico ruling: fleet/skills/x/SKILL.md:4: -- Keep policy (Rico, 2026-10-02).",
+			"changes an operator ruling: fleet/skills/x/SKILL.md:4: -- Keep policy (The operator, 2026-10-02).",
 		]);
 	});
 	test("a renamed AGENTS.md without a hunk is class B", async () => {
@@ -2505,7 +2510,7 @@ describe("merge-check: a change to a Rico ruling is Rico's", () => {
 		const r = await run("o/r", 1705);
 		expect(r.json.class).toBe("B");
 		expect(r.json.reasons).toEqual([
-			"changes a Rico ruling: docs/x\t/rules.md:7: Keep policy (Rico, 2026-10-02).",
+			"changes an operator ruling: docs/x\t/rules.md:7: Keep policy (The operator, 2026-10-02).",
 		]);
 	});
 	for (const n of [1703, 1704]) {
@@ -2517,20 +2522,20 @@ describe("merge-check: a change to a Rico ruling is Rico's", () => {
 		});
 	}
 
-	test("a removed date-first Rico ruled line is class B", async () => {
+	test("a removed date-first the operator ruled line is class B", async () => {
 		const r = await run("o/r", 1697);
 		expect(r.json.class).toBe("B");
 		expect(r.json.mergeable).toBe(false);
 		expect(r.json.reasons).toEqual([
-			"changes a Rico ruling: fleet/skills/x/SKILL.md:4: 2026-10-03 Rico ruled X",
+			"changes an operator ruling: fleet/skills/x/SKILL.md:4: 2026-10-03 the operator ruled X",
 		]);
 	});
-	test("a removed line with a literal vertical tab before Rico is class B", async () => {
+	test("a removed line with a literal vertical tab before the operator is class B", async () => {
 		const r = await run("o/r", 1698);
 		expect(r.json.class).toBe("B");
 		expect(r.json.mergeable).toBe(false);
 		expect(r.json.reasons).toEqual([
-			"changes a Rico ruling: fleet/skills/x/SKILL.md:4: Keep policy\u000b(Rico, 2026-10-02).",
+			"changes an operator ruling: fleet/skills/x/SKILL.md:4: Keep policy\u000b(The operator, 2026-10-02).",
 		]);
 	});
 	test("deleting a decisions-ledger row is class B", async () => {
@@ -2544,7 +2549,7 @@ describe("merge-check: a change to a Rico ruling is Rico's", () => {
 		expect(r.json.class).toBe("B");
 		expect(r.json.mergeable).toBe(false);
 		expect(r.json.reasons).toEqual([
-			`changes a Rico ruling: fleet/skills/x/SKILL.md:4: ${RULE.slice(0, 80)}`,
+			`changes an operator ruling: fleet/skills/x/SKILL.md:4: ${RULE.slice(0, 80)}`,
 		]);
 	});
 	test("a binary entry is class B naming the file", async () => {
@@ -2555,7 +2560,7 @@ describe("merge-check: a change to a Rico ruling is Rico's", () => {
 			"binary change to docs/rules.md cannot be checked for ruling lines",
 		]);
 	});
-	test("a removed per Rico ruling 2026-10-03 citation is class B", async () => {
+	test("a removed per the operator ruling 2026-10-03 citation is class B", async () => {
 		const r = await run("o/r", 1696);
 		expect(r.json.class).toBe("B");
 		expect(r.json.mergeable).toBe(false);
@@ -2576,10 +2581,10 @@ describe("merge-check: a change to a Rico ruling is Rico's", () => {
 		expect(r.json.class).toBe("A");
 		expect(r.json.reasons).toEqual([ROUTINE]);
 	});
-	test("needs-rico stays the reason when the label is already on the PR", async () => {
+	test("needs-operator stays the reason when the label is already on the PR", async () => {
 		const r = await run("o/r", 1694);
 		expect(r.json.class).toBe("B");
-		expect(r.json.reasons).toEqual(["label needs-rico"]);
+		expect(r.json.reasons).toEqual(["label needs-operator"]);
 	});
 });
 

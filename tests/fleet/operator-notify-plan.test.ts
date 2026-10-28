@@ -1,5 +1,5 @@
 /**
- * @module tests/fleet/rico-notify-plan
+ * @module tests/fleet/operator-notify-plan
  * @description Pure send planning of the notifier: once each, at
  *   most 6 texts an hour, bursts summarised. Fixture objects only, no I/O.
  */

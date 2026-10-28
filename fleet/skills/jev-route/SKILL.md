@@ -31,7 +31,7 @@ Jev (the `config/jev/classifiers/pr-review-depth.json` question, same
 instructions and criteria) is advisory: a confident `high` reading can raise a
 junior answer to senior; it never lowers one.
 
-**How many reviewers** (Rico, 2026-10-06: the obviously fine need one
+**How many reviewers** (The operator, 2026-10-06: the obviously fine need one
 reviewer, not two). `reviewers` is `1` when step 1 did not fire (no senior
 factor, no `humanRequired`), the last verdict is not `fix-first`, and either
 Jev answered `confident: true` with `level: low`, or the change is docs only

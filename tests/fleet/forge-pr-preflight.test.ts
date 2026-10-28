@@ -101,7 +101,7 @@ const prJson = (prBody: string) => ({
 	html_url: "https://forge.example.internal/rodaddy/demo/pulls/7",
 	title: "Add thing",
 	body: prBody,
-	user: { login: "rico" },
+	user: { login: "operator" },
 });
 const parse = (prBody: string, action = "opened", changes = {}) => {
 	const b = { action, changes, number: 7, repository: { full_name: "rodaddy/demo" } };

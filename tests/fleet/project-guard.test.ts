@@ -112,7 +112,7 @@ describe("handleIssueEvent", () => {
 	});
 	test("infra: title starts Infra, alerts origin, or created by Nagatha", async () => {
 		for (const over of [
-			{ title: "Infra: disk full on ct105" },
+			{ title: "Infra: disk full on runner-05" },
 			{ originKind: "plugin:rodaddy.alerts" },
 			{ createdByAgentId: "a-nagatha" },
 		]) {
@@ -130,7 +130,7 @@ describe("handleIssueEvent", () => {
 		]);
 		expect(f.comments).toEqual([{ id: "i1", body: REJECT_COMMENT }]);
 		expect(REJECT_COMMENT).toBe(
-			"No project (Rico 2026-10-07: every task carries a project). Set the right project, then move it back to its owner.",
+			"No project (The operator 2026-10-07: every task carries a project). Set the right project, then move it back to its owner.",
 		);
 	});
 	test("an unknown owner's owner/repo#n goes to triage, not a same-named project", async () => {

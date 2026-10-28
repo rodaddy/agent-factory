@@ -373,8 +373,8 @@ function recordedMeta(requests: Recorded[], index: number): Record<string, unkno
  */
 const LIST_TABLE = [
 	"[node05] VMID       Status     Lock         Name                 JOB_ID     SPAWN_ISO",
-	"[node05] 9921       running                 CT119               job-abc    2026-08-17T01:02:03Z",
-	"[node05] 9922       stopped                 CT120               -          -",
+	"[node05] 9921       running                 runner-19               job-abc    2026-08-17T01:02:03Z",
+	"[node05] 9922       stopped                 runner-20               -          -",
 ].join("\n");
 
 describe("HttpRunnerTransport wire shape", () => {
@@ -808,7 +808,7 @@ describe("HttpRunnerTransport verb round-trips", () => {
 					{
 						vmid: 9921,
 						status: "running",
-						name: "CT119",
+						name: "runner-19",
 						job_id: "job-abc",
 						spawn_iso: "2026-08-17T01:02:03Z",
 					},
@@ -819,7 +819,7 @@ describe("HttpRunnerTransport verb round-trips", () => {
 			{
 				vmid: 9921,
 				status: "running",
-				name: "CT119",
+				name: "runner-19",
 				jobId: "job-abc",
 				spawnIso: "2026-08-17T01:02:03Z",
 			},
@@ -835,11 +835,11 @@ describe("HttpRunnerTransport verb round-trips", () => {
 			{
 				vmid: 9921,
 				status: "running",
-				name: "CT119",
+				name: "runner-19",
 				jobId: "job-abc",
 				spawnIso: "2026-08-17T01:02:03Z",
 			},
-			{ vmid: 9922, status: "stopped", name: "CT120", jobId: null, spawnIso: null },
+			{ vmid: 9922, status: "stopped", name: "runner-20", jobId: null, spawnIso: null },
 		]);
 	});
 
@@ -1264,9 +1264,9 @@ describe("HttpRunnerTransport forge band verbs", () => {
  */
 const FORGE_TABLE = [
 	"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO",
-	"[node05] 9101       running                 CT103               -                                            -",
+	"[node05] 9101       running                 runner-03               -                                            -",
 	"[node06] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO",
-	"[node06] 9102       stopped                 CT121               -                                            -",
+	"[node06] 9102       stopped                 runner-21               -                                            -",
 	"",
 ].join("\n");
 
@@ -1290,8 +1290,8 @@ const verbResultReply = (id: unknown, vr: unknown, withText = true) => ({
 
 describe("HttpRunnerTransport forge band VerbResult replies", () => {
 	const FORGE_BOXES = [
-		{ vmid: 9101, status: "running", name: "CT103", jobId: null, spawnIso: null },
-		{ vmid: 9102, status: "stopped", name: "CT121", jobId: null, spawnIso: null },
+		{ vmid: 9101, status: "running", name: "runner-03", jobId: null, spawnIso: null },
+		{ vmid: 9102, status: "stopped", name: "runner-21", jobId: null, spawnIso: null },
 	];
 
 	test("listBand parses the forge table out of a real VerbResult (structured + text)", async () => {
@@ -1371,7 +1371,7 @@ describe("HttpRunnerTransport forge band VerbResult replies", () => {
 
 const SLOT_SAMPLE = [
 	"[node05] VMID       Status     Lock         Name                 JOB_ID                                       SPAWN_ISO",
-	"[node05] 9102       running                 CT121               -                                            -",
+	"[node05] 9102       running                 runner-21               -                                            -",
 	"[slot] vmid=9106 status=absent lane=general",
 	"[slot] vmid=9102 node=node02 status=running lane=general",
 	"[slot] vmid=9103 node=- status=unknown lane=general",

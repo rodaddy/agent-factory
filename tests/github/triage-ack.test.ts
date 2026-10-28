@@ -438,7 +438,7 @@ describe("triage ack — exactly one per pickup", () => {
  */
 describe("agent signature line on the triage comment", () => {
 	const SIG_PREFIX =
-		"**agent:** rodaddy-watcher · model unattested · seat software-factory watcher (CT101) · ";
+		"**agent:** rodaddy-watcher · model unattested · seat software-factory watcher (runner-01) · ";
 
 	test("marker, then signature, then the ack heading", () => {
 		const body = commentBody(identity, triageResult());

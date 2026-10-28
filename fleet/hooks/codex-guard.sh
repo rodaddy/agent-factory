@@ -76,7 +76,7 @@ apply_patch | functions.apply_patch)
 	patch="$(jq -r '.tool_input.command // .tool_input.input // .tool_input.patch // "" | tostring' <<<"$payload")" || refuse
 	paths="$(printf '%s\n' "$patch" | sed -n -E 's/^[[:space:]]*\*\*\* (Add File|Update File|Delete File|Move to): *(.*[^[:space:]])[[:space:]]*$/\2/p')"
 	[ -n "$paths" ] || refuse "fleet-guard: could not read an apply_patch target, refusing (sf#1230)"
-	# Rico (PR 1461 round 3b): a patch touching more than 8 files is too big; split it.
+	# The operator (PR 1461 round 3b): a patch touching more than 8 files is too big; split it.
 	# At 8, every check runs in one parallel wave, so a hung guard ends at its timeout (5 s default).
 	n="$(printf '%s\n' "$paths" | wc -l | tr -d ' ')"
 	[ "$n" -le 8 ] || refuse "fleet-guard: apply_patch touches $n files (max 8); split it"

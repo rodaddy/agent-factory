@@ -12,7 +12,7 @@ export const QUESTION_STATUSES = ["in_review", "blocked", "todo", "in_progress"]
 export const MAX_IN_FLIGHT = 4;
 const SMYTHE_LOGIN = "sf-smythe";
 export const ROUTE_ASK =
-	"Decide and post the decision as a comment on the origin task. A question that only Rico may decide goes to him with TELL RICO:.";
+	"Decide and post the decision as a comment on the origin task. A question that only the operator may decide goes to him with TELL OPERATOR:.";
 
 // Pending, a question, and asked by an agent; a board user's own card is theirs.
 export const isSeatQuestion = (i) =>
@@ -51,7 +51,7 @@ export function smytheTask(origin, card, askerName, smytheId) {
 }
 
 export const routedComment = (identifier) =>
-	`Routed to Smythe in ${identifier} (Rico 2026-10-07: the factory answers seat questions).`;
+	`Routed to Smythe in ${identifier} (The operator 2026-10-07: the factory answers seat questions).`;
 
 // deps: listIssues({status, limit}), listInteractions(issueId), stateGet,
 // stateSet, findAgent(login), optional agentName(id), createTask(task),

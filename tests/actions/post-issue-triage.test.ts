@@ -298,13 +298,13 @@ describe("planTriage labels", () => {
 describe("planTriage comment", () => {
 	test("escapes untrusted read text so it cannot introduce structure or a mention", () => {
 		const plan = planTriage(
-			reply(result({ triage: { labels: ["bug"], read: "<script>@rico" } })),
+			reply(result({ triage: { labels: ["bug"], read: "<script>@operator" } })),
 			ENV,
 		);
 		expect(plan.ok).toBe(true);
 		if (!plan.ok) throw new Error("unreachable");
 		expect(plan.comment).not.toContain("<script>");
-		expect(plan.comment).not.toContain("@rico");
+		expect(plan.comment).not.toContain("@operator");
 		expect(plan.comment).toContain("&lt;script&gt;");
 	});
 

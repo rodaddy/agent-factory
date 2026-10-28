@@ -7,7 +7,7 @@ description: "Review one pull request for real defects and prove each one by run
 
 Review one pull request for real defects, the same way every time. Inputs: a
 Forge repo and a pull request number. Every review is published on the PR
-(Rico 2026-10-03, sf#1365: shadow mode is gone; a review nobody sees protects
+(The operator 2026-10-03, sf#1365: shadow mode is gone; a review nobody sees protects
 nothing).
 
 You are one of a pair: one reviewer on an Anthropic model and one on a GPT
@@ -70,7 +70,7 @@ the other reviewer's findings before you post yours.
    ran the box out of memory on 2026-10-01 and killed every employee.
    A reviewer never applies an infra change: any ansible run is `--check` only
    and never targets the box it runs on. bash-guard refuses any apply without
-   `--check` and any local connection (Rico, 2026-10-05,
+   `--check` and any local connection (The operator, 2026-10-05,
    sf#1427).
    A task with `check_mode: false` runs for real even under `--check`, so a
    reviewer never runs a playbook against its own box, and reads such tasks
@@ -97,11 +97,11 @@ the other reviewer's findings before you post yours.
      nothing.
    - **Not a defect**: a hardening idea, a style preference, or a wider scope
      than the PR. List these separately under "Suggestions". They never block.
-   - **Credentials inside Rico's own infrastructure never get a rotation ask**.
+   - **Credentials inside the operator's own infrastructure never get a rotation ask**.
     A LAN address, an internal hostname, or a
      disabled TLS check on an internal host is not a finding. Never recommend
      rotating or revoking anything: rotation happens in bulk, through the
-     Vaultwarden process, when Rico schedules it. The no-secrets-in-git floor
+     Vaultwarden process, when the operator schedules it. The no-secrets-in-git floor
      still stands: a live secret value this PR commits to any repo is a P0
      "secret exposed" (Forge repos push-mirror to GitHub), and it is reported
      to Bishop as company-conduct requires. Name the file and line, never the

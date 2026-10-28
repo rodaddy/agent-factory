@@ -13,7 +13,7 @@ accepted:
     prod:
       tag: v0.3.0
       image: 10.0.20.58:3000/rtech/linkedin-automation:v0.3.0@sha256:aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111
-  by: rico
+  by: operator
   on: 2026-09-07
 targets:
   - name: uat

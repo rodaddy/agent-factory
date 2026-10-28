@@ -216,9 +216,9 @@ describe("infra-health check", () => {
 	});
 	test("a firing warning alert is warn", async () => {
 		fixture[Q.alerts] = [
-			s({ alertname: "DiskSpaceWarning", instance: "ct105", severity: "warning" }, 1),
+			s({ alertname: "DiskSpaceWarning", instance: "runner-05", severity: "warning" }, 1),
 		];
-		await expectOnly("alert:DiskSpaceWarning:ct105", "warn");
+		await expectOnly("alert:DiskSpaceWarning:runner-05", "warn");
 	});
 	test("empty vectors are not a clean run", async () => {
 		for (const q of Object.keys(fixture)) fixture[q] = [];

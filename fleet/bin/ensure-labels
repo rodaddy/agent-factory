@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * ensure-labels: the company labels `tier-0`..`tier-5`
- * (tier-0 is infra, Rico 2026-10-07) and `priority` on the Paperclip board. Lists them (GET
+ * (tier-0 is infra, the operator 2026-10-07) and `priority` on the Paperclip board. Lists them (GET
  * /api/companies/:co/labels) and, with --apply, creates each missing one (POST
  * same path, {name, color}). Idempotent: an existing label is never touched.
  *

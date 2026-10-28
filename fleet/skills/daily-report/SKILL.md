@@ -5,7 +5,7 @@ description: "Once a day, post the company's numbers on the day's report board i
 
 # daily-report
 
-The company improves only if someone measures it every day (Rico, 2026-10-03,
+The company improves only if someone measures it every day (The operator, 2026-10-03,
 sf#1343). This skill produces the numbers; `daily-retro` decides what to
 change. Run by the daily routine `Daily report`, which creates the board issue
 `Daily report <YYYY-MM-DD>` and assigns it to you.
@@ -31,7 +31,7 @@ change. Run by the daily routine `Daily report`, which creates the board issue
    For each change it shipped, read the metric line in its PR body
    (`Metric: <name> <before> -> <target>`), measure that metric now the same
    way, and add a row: PR, metric, before, now, target.
-5. Add PR size against review speed (Rico, 2026-10-08: watch that PRs do not
+5. Add PR size against review speed (The operator, 2026-10-08: watch that PRs do not
    all grow to the 1200-line bar, and compare one big PR with a stack of small
    ones). Pass one `--repo` for each repo that had a PR merged or sent back in
    step 3, with no pipe, so its exit code is real:

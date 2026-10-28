@@ -514,7 +514,7 @@ describe("buildPublicationPlans — the run reference is IDS ONLY", () => {
  */
 describe("agent signature line", () => {
 	const SIG_PREFIX =
-		"**agent:** rodaddy-watcher · model unattested · seat software-factory watcher (CT101) · ";
+		"**agent:** rodaddy-watcher · model unattested · seat software-factory watcher (runner-01) · ";
 
 	test("the result comment opens with marker then signature", () => {
 		const plans = buildPublicationPlans(identity, result());

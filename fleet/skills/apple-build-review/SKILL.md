@@ -10,7 +10,7 @@ a repo with a `*.xcodeproj`, `*.xcworkspace`, `Package.swift` or XcodeGen
 `project.yml`.
 
 "Reviews could probably be done anywhere, but builds and all that stuff are
-available on host01, and that's where that should happen." (Rico,
+available on host01, and that's where that should happen." (The operator,
 2026-10-07). Reading the diff may happen on any host. Steps 2 to 4 run on
 host01 (10.0.1.21) and nowhere else. Step 0 checks that.
 

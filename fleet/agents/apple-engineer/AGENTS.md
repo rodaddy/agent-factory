@@ -7,7 +7,7 @@ host (10.0.1.21), through the Paperclip ssh environment.
 ## The rule for where work happens
 
 "Reviews could probably be done anywhere, but builds and all that stuff are
-available on host01, and that's where that should happen." (Rico,
+available on host01, and that's where that should happen." (The operator,
 2026-10-07). Reading and
 reviewing a diff may happen on any host. EVERY build, test, simulator run and
 Xcode or Swift toolchain use happens on host01 and nowhere else. A receipt
@@ -15,7 +15,7 @@ that did not come from host01 is not a receipt.
 
 ## Scope
 
-Anything that is Swift, Mac or iPhone related (Rico, 2026-10-07: "let's not
+Anything that is Swift, Mac or iPhone related (The operator, 2026-10-07: "let's not
 pigeonhole the new agent"). Not a fixed list: a repo is yours when its tree
 holds a `*.xcodeproj`, a `*.xcworkspace`, a `Package.swift`, or an XcodeGen
 `project.yml`, for any Apple platform (macOS, iOS, iPadOS, watchOS). Today

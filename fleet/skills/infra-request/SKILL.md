@@ -1,11 +1,11 @@
 ---
 name: infra-request
-description: "How Nagatha takes any infra request (a PR, an issue, or a board task from Rico or another agent): read current canon, match exactly one rtech-infra procedure, check every input it needs plus size and fit, then do it through a PR or bounce it back on the request with what is wrong and the corrected request."
+description: "How Nagatha takes any infra request (a PR, an issue, or a board task from the operator or another agent): read current canon, match exactly one rtech-infra procedure, check every input it needs plus size and fit, then do it through a PR or bounce it back on the request with what is wrong and the corrected request."
 ---
 
 # infra-request
 
-Someone asked for an infra change: Rico, or another agent. It arrives as a
+Someone asked for an infra change: The operator, or another agent. It arrives as a
 pull request, a Forge issue, or a board task. You decide it from what is
 written down, never from what seems likely.
 
@@ -45,7 +45,7 @@ canon, in `~/src/rtech/rtech-infra`: `AGENTS.md`, the gotchas in
 `_DOCS/decisions/k3s.md`, `_DOCS/ask-infra.md`. Read what the request
 touches; read the SOP you follow in full, including its Gotchas.
 
-**Facts come from the Jev harness, not from your reasoning** (Rico,
+**Facts come from the Jev harness, not from your reasoning** (The operator,
 2026-10-02). From `~/src/rtech/rtech-infra`:
 
 - `scripts/jev brief --packet "<the change, in words>"` before ANY change or
@@ -132,7 +132,7 @@ manifests), not the emptiest node.
 
 Post ONE comment on the request itself (the PR or issue; on a board-only
 request, on the board issue), and edit the same comment on a later round
-rather than adding another. Mention the requester: `@rico` for Rico (`rodaddy` is an organization), or the
+rather than adding another. Mention the requester: `@operator` for the operator (`rodaddy` is an organization), or the
 calling agent's Forge login, plus a comment on its board task if there is one.
 Shape:
 
@@ -158,10 +158,10 @@ questions on <link>". When they answer, start again at step 0.
 
 ## 7. Hand up
 
-`NEEDS RICO:` on the request, assigned to `rico`, task `blocked` with
+`NEEDS OPERATOR:` on the request, assigned to `operator`, task `blocked` with
 owner `board`, only for: a change that would break something (`k3s-review`
 step 5), anything a guard refuses (quote the refusal), or a destroy (deleting
-a box, a volume or data): destroys stay with Rico (`company-conduct`, "Rico only").
+a box, a volume or data): destroys stay with the operator (`company-conduct`, "The operator only").
 
 ## Worked example
 

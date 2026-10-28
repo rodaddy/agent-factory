@@ -159,7 +159,7 @@ describe("runner_run timeout is not a release", () => {
 				{
 					vmid: 9001,
 					status: "running",
-					name: "CT118",
+					name: "runner-18",
 					jobId: ran[0]?.jobId ?? "unknown",
 					spawnIso: "x",
 				},
@@ -206,7 +206,7 @@ describe("runner_run timeout is not a release", () => {
 	test("foreign: another job owns the box, so this job fails and the vmid stays held", async () => {
 		await withTestDb(async (db) => {
 			const { transport, first, second } = await runPassWith(db, async () => [
-				{ vmid: 9001, status: "running", name: "CT118", jobId: "someone-else", spawnIso: "x" },
+				{ vmid: 9001, status: "running", name: "runner-18", jobId: "someone-else", spawnIso: "x" },
 			]);
 
 			expect(await jobStatus(db, first)).toBe("pending");

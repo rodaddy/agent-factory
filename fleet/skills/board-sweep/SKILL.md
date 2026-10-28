@@ -5,7 +5,7 @@ description: "Every hour, clear the blocked inbox by rule with the board-sweep s
 
 # board-sweep
 
-Nobody clears the blocked inbox by hand (Rico, 2026-10-03, sf#1338: 615
+Nobody clears the blocked inbox by hand (The operator, 2026-10-03, sf#1338: 615
 tasks blocked that night). Run by the hourly routine `Board sweep`, which
 creates the board issue `Board sweep <YYYY-MM-DD HH>` and assigns it to you.
 
@@ -85,7 +85,7 @@ Every open review task -- `todo`, `in_progress` or `blocked`, the lead's
 3. `escalate`: stalled again after two kickstarts the board accepted (a
    refused todo leaves a `kickstart-refused` comment and does not count). The task gets one comment
    and Bishop gets one high-priority `Stalled review: <title>` issue (never
-   Rico); while that issue is open the task is listed, not touched.
+   The operator); while that issue is open the task is listed, not touched.
 4. The queue: kickstarts and blocked-review releases go out by priority
    (critical, high, medium, low; then the lowest `pri:N` label; then oldest).
    Each assignee takes at most its free run slots (`maxConcurrentRuns` minus
@@ -100,4 +100,4 @@ The procedure does not change: dry run first, read it, then `--apply`.
 ## Never
 
 Cancel without a comment. Cancel or unblock Nagatha's tasks. Run `--apply`
-before reading the dry run. Make Rico go through the list.
+before reading the dry run. Make the operator go through the list.

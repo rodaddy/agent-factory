@@ -129,7 +129,7 @@ async function worker(board: Row[]) {
 				head: { sha: SHA },
 				html_url: `https://forge.example.internal/${REPO}/pulls/41`,
 				title: "Add thing",
-				user: { login: "rico" },
+				user: { login: "operator" },
 			},
 		});
 		await mod.default.onWebhook({

@@ -102,7 +102,7 @@ function approvalId(companyId) {
 /**
  * Shared provider-start/run-end/timer guard. All I/O errors refuse starts. The persistent
  * stop is deliberately latched across midnight, restart and manual seat resume; this module
- * exposes no reset. Notifications use the existing approvals -> rico-notify -> imsg rail.
+ * exposes no reset. Notifications use the existing approvals -> operator-notify -> imsg rail.
  */
 export function createCompanyBudgetGuard({
 	query,

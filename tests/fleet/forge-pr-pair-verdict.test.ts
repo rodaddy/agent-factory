@@ -13,7 +13,7 @@ import {
 // `verdict:` on their own task; pairVerdict reads them for one head.
 const repo = "rodaddy/demo";
 const SHA = `abcdef1${"0".repeat(33)}`;
-const ev = { repo, number: 13, headSha: SHA, author: "rico" };
+const ev = { repo, number: 13, headSha: SHA, author: "operator" };
 const seats = { claude: new Set(["k", "g"]), gpt: new Set(["c", "n"]) };
 const T1 = "2026-10-07T10:00:00Z";
 const T2 = "2026-10-07T11:00:00Z";

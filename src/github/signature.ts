@@ -59,7 +59,7 @@ export const UNATTESTED_MODEL = "unattested";
 const AGENT = "rodaddy-watcher";
 
 /** Fixed, author-controlled: where the watcher runs. */
-const SEAT = "software-factory watcher (CT101)";
+const SEAT = "software-factory watcher (runner-01)";
 
 /** Fixed, author-controlled: the harness that runs a Forgejo Actions lane. */
 export const ACTIONS_AGENT = "forgejo-actions";

@@ -151,7 +151,7 @@ describe("the sweep files the missing Merge task", () => {
 					number: 5,
 					title: "t",
 					html_url: url(5),
-					user: { login: "rico" },
+					user: { login: "operator" },
 					head: { sha: SHA },
 				};
 			return new Response(JSON.stringify(body), { status: 200 });

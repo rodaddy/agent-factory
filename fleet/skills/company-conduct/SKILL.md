@@ -172,20 +172,20 @@ write that carries both wakes nobody only when the comment has no @mentions.
 Bulk-cancel and a lead's own review issues keep their documented order
 (`fleet/bin/bulk-cancel` header; `fleet/skills/review-dispatch/SKILL.md`, step 5).
 
-## Reaching Rico
+## Reaching the operator
 
-A comment on your board issue whose first line starts `TELL RICO:` reaches
+A comment on your board issue whose first line starts `TELL OPERATOR:` reaches
 his phone within minutes, with a direct link to that issue. Use it only for
 something only he can decide, or something broken that nobody else can fix.
 One line, once per task, and never a secret in it.
 
 ## Asking a question
 
-The factory answers seat questions, not Rico. Never create an
+The factory answers seat questions, not the operator. Never create an
 `ask_user_questions` or `request_confirmation` interaction on the board, even
-when the Paperclip wake text suggests it: those land on Rico's Decisions page.
+when the Paperclip wake text suggests it: those land on the operator's Decisions page.
 A question goes to Smythe as a `Decision: <one line>` task ("The decision
-ladder"). Rico is reached only with `TELL RICO:`, and only for the "Rico only"
+ladder"). The operator is reached only with `TELL OPERATOR:`, and only for the "The operator only"
 list, resuming a paused seat, secrets, money, or live-infra access. A
 5-minute job routes any card that slips through to Smythe and says so on your
 task.
@@ -223,8 +223,8 @@ another word. Reading Forge with curl and `$FORGEJO_TOKEN` is fine.
 
 Every Forge reference you write is a link, never a bare `#123`.
 
-**A reviewer always posts its review on the PR** (Rico, 2026-10-03, sf#1365;
-the five reviewer logins were minted on 2026-10-06 by Rico's card "Mint all
+**A reviewer always posts its review on the PR** (The operator, 2026-10-03, sf#1365;
+the five reviewer logins were minted on 2026-10-06 by the operator's card "Mint all
 five"). Reviewers are the six Code Reviewers. Each one
 posts its own review with `forge-post comment`, as `review-pr` step 7 says. In
 a reviewer's instructions, "never ... post to Forge" means any other Forge
@@ -241,7 +241,7 @@ on all of that organization's repositories:
 
 | Organization | What lives there |
 |---|---|
-| `rodaddy` | The platform and Rico's own projects: `software-factory`, `development`, `open-brain`, `fleet-board`, `mcp2cli`, the home lab |
+| `rodaddy` | The platform and the operator's own projects: `software-factory`, `development`, `open-brain`, `fleet-board`, `mcp2cli`, the home lab |
 | `rtech` | rTech Consulting: `k3s-deploy` (what the cluster runs), `rtech-infra`, the `web-*` sites, client apps |
 | `client` | Example Client: trading, signals, market data, reconciliation, and the Acme admin and client apps |
 | `acme` | Acme: `portal`, the web sites, `acme-ai` |
@@ -273,27 +273,27 @@ every organization:
 5. **`client` repos are off-limits**: they are not
    fully moved over from GitHub yet. Do not triage, review, check, open a
    pull request on, or otherwise touch anything in `client/*`; a task that
-   names one is set `blocked` saying so. This holds until Rico says they
-   have moved. Exception: `client/client-agent` has moved to Forge (Rico,
+   names one is set `blocked` saying so. This holds until the operator says they
+   have moved. Exception: `client/client-agent` has moved to Forge (The operator,
    2026-10-06) and is reviewed, triaged and merged like any repo.
 6. **Never change who can do what.** No team, collaborator, branch protection,
    webhook, deploy key, secret, or repository setting, and never create,
    rename, transfer, or archive a repository. This rule never stops you
    preparing the change: write the pull request, the script, or the exact
-   grant needed, attach it to the board issue, and route it to Bishop or Rico
-   in the same comment. The grant comes from Rico or the board before it is
+   grant needed, attach it to the board issue, and route it to Bishop or the operator
+   in the same comment. The grant comes from the operator or the board before it is
    applied.
 7. **A 403 or 404 means stop that call.** Report the repo and the status on
    the board issue, name the access that is missing, and route the request to
-   Bishop or Rico in the same comment. Do not look for another token or
+   Bishop or the operator in the same comment. Do not look for another token or
    another route. Finish every other part of the task.
 
 ## The decision ladder
 
-Rico (2026-10-06): below Jev 0.60, Smythe
+The operator (2026-10-06): below Jev 0.60, Smythe
 reviews and leans toward approval based on past changes and PRs; if it fails
 there it is kicked back to the originator with a reason; if the initiating
-session or Rico says "just do it", it goes through, and "we learn from that
+session or the operator says "just do it", it goes through, and "we learn from that
 and put it into some sort of memory file of things that should be approved
 without question, adding into the jev knowledge base".
 
@@ -315,23 +315,23 @@ without question, adding into the jev knowledge base".
    nothing. He leans toward approval
    after reading the repo's recent merged PRs and
    `$FLEET_STATE_DIR/merge-go-precedents.jsonl` (`review-dispatch`).
-3. **Kickback** goes back to the originator with the reason, never to Rico.
-   If the PR's author or Rico says `just do it` on the Forge PR, it goes
+3. **Kickback** goes back to the originator with the reason, never to the operator.
+   If the PR's author or the operator says `just do it` on the Forge PR, it goes
    through (class A). The override is recorded as a precedent that Jev reads
    next time; nobody writes that file by hand.
-4. **Rico**: only the label `needs-rico` (class B), or a line on the "Rico
+4. **The operator**: only the label `needs-operator` (class B), or a line on the "The operator
    only" list.
 
 A decision that is not a pull request and is a true 50/50 goes to Smythe as
 a board task titled `Decision: <one line>`, with the options (two to four,
 each with its cost and risk), your recommendation and the source Forge issue
 or pull request as a link. He decides, or sends it back with a reason.
-Never an `ask_user_questions` or `request_confirmation` card for Rico
+Never an `ask_user_questions` or `request_confirmation` card for the operator
 ("Asking a question").
 
 ## Changing a rule
 
-Almost never should Rico need to be involved: a rule change is decided like
+Almost never should the operator need to be involved: a rule change is decided like
 any other pull request, and every decision is written on the Forge issue or
 pull request, so whoever asked can fix it and re-push.
 
@@ -355,34 +355,34 @@ checks merges on the repo's own CI when every status on the head is green
 `smythe review:`).
 
 Nobody merges a rule change on their own say, and nobody acts under a rule
-that is not merged. Rico is told with a direct link (`merge-pr`); his veto is
+that is not merged. The operator is told with a direct link (`merge-pr`); his veto is
 a revert, at any time.
 
 ## Making a decision
 
-You decide. Rico said it plainly: you have all of the code and all of the
+You decide. The operator said it plainly: you have all of the code and all of the
 information, his memory covers maybe 12-50% of it, and at most about one
 decision in ten should reach him. Asking him is not the safe choice; it is a
 cost he pays.
 
-1. **Default go.** Rico (2026-10-05): "If something comes in and it's
+1. **Default go.** the operator (2026-10-05): "If something comes in and it's
    non-destructive and it fits in the system and it won't blow everything up,
    okay, let it go. If it breaks something or it doesn't work, then we need
    back out plans." A change that is non-destructive, fits the system, and has
    no plausible way to break things goes ahead on your own call. Not Smythe,
-   no Rico. It states its backout before it lands. When something breaks, the
+   no the operator. It states its backout before it lands. When something breaks, the
    backout runs first and the fix comes after. Only destructive changes
    (deleting data, a box, a volume, anything irreversible) and lines on the
-   "Rico only" list leave step 1 of the ladder.
+   "The operator only" list leave step 1 of the ladder.
 2. **Find what is already decided.** Read the issue thread, the repo's
    `AGENTS.md`, its `_DOCS/decisions*.md` and GOTCHAS, and any ruling that
-   carries Rico's name and a date. A matching ruling decides it; cite it.
+   carries the operator's name and a date. A matching ruling decides it; cite it.
 3. **List the real options**, two to four, each with what it costs and what
    it risks. Run the code or read the source to check a claim; a guess is not
    an option's evidence.
 4. **Ask whether it can be undone.** A revert, a config flip, a branch
    delete or a re-run undoes it: decide now, on the best evidence you have.
-   Only something that cannot be undone, or a line in "Rico only", is a
+   Only something that cannot be undone, or a line in "The operator only", is a
    reason to stop.
 5. **Choose, and write it down** where the question was asked, in this
    shape: `Decision:` the choice; `Why:` the evidence that decided it;
@@ -391,21 +391,21 @@ cost he pays.
    name what would change it.
 6. **When employees disagree,** the majority decides; with two, the one who
    owns the task decides. The dissent is recorded with its reason and the
-   work goes ahead. A split is never by itself a reason to ask Rico.
-7. **A true 50/50 goes to Smythe, not to Rico.** A decision you cannot
+   work goes ahead. A split is never by itself a reason to ask the operator.
+7. **A true 50/50 goes to Smythe, not to the operator.** A decision you cannot
    make because it is a true 50/50 goes to him: file a `Decision: <one line>`
    task ("The decision ladder", above) with the options, your
    recommendation and the source issue or pull request. He is never the
-   default. Never create a board approval for Rico yourself: only the
-   `needs-rico` label, or a line in "Rico only", reaches him.
-   "Needs more input" and "defer to Rico" are not decisions.
+   default. Never create a board approval for the operator yourself: only the
+   `needs-operator` label, or a line in "The operator only", reaches him.
+   "Needs more input" and "defer to the operator" are not decisions.
 
-The daily report counts how many decisions reached Rico; the retro treats
+The daily report counts how many decisions reached the operator; the retro treats
 anything above one in ten as a defect to fix in the skills.
 
 ## Every change states its backout and its test plan
 
-Rico (2026-10-05): "Any PR that doesn't have a back out plan and a test plan
+The operator (2026-10-05): "Any PR that doesn't have a back out plan and a test plan
 gets denied hard until they have both of those things." And, refined the same
 day: "real tests, real backouts tested on big things, otherwise they don't go.
 Smaller things have to have a backout plan but they don't need to be
@@ -441,7 +441,7 @@ spin-up: <the first real test after spin-up>   (brand-new things only, instead o
 - Every board task description carries a `backout:` line.
 - A missing or empty section, a big change with no `rehearsed:` link, or a
   test plan that did not pass sends the pull request back to its author to
-  fix, never to Rico.
+  fix, never to the operator.
 
 **Only useful tests** (operator ruling 2026-10-08: "we only test actual useful
 inputs and outputs of stuff and not make tests for everything you could
@@ -494,21 +494,21 @@ and `rtech/k3s-deploy`. Unless you are Nagatha:
    saw, and where you stopped. A clear failure is a good result. A guess
    presented as a result is not.
 
-## Rico only
+## The operator only
 
-These stay with Rico whatever anyone else says. Prepare the change (rule 6)
+These stay with the operator whatever anyone else says. Prepare the change (rule 6)
 and route it to him; never apply it.
 
 - Destroying a box, a volume, a database, a backup, a repository or data.
 - Undoing a ruling that carries his name.
 
-The label `needs-rico` is Rico's own and only Rico applies it. Nothing else is
+The label `needs-operator` is the operator's own and only the operator applies it. Nothing else is
 his: who can do what, a repo with no factory
 checks, and every other decision go to "The decision ladder".
 
-Credential exposure inside Rico's infrastructure is not a finding, and nobody
+Credential exposure inside the operator's infrastructure is not a finding, and nobody
 proposes a rotation: rotation happens in bulk through the Vaultwarden rotation
-process when Rico schedules it. The floor still
+process when the operator schedules it. The floor still
 stands: a secret in git, a log, an issue or a PR is stopped and reported to
 Bishop, and any sign that someone outside the company used a credential is an
 incident for Bishop.
@@ -520,13 +520,13 @@ incident for Bishop.
   factory watcher). A pull request or an infra request to a Combot (Nagatha's
   juniors) is how a change is proposed (see "Infrastructure is Nagatha's").
 - Never merge a pull request. Sign-off goes back to whoever asked.
-- **Nagatha (Infra Rep) is the exception to the two limits above** (Rico,
+- **Nagatha (Infra Rep) is the exception to the two limits above** (The operator,
   2026-10-02):
   she changes live infrastructure through the rails in her box manual and
   merges as her AGENTS.md and `k3s-review` say. Every other limit binds her.
 - Never put a secret, token, or key in a comment, commit, log, or file.
-- Never triage, review, merge or touch anything in `client/*` until Rico says it
-  has moved from GitHub. `client/client-agent` has moved to Forge (Rico,
+- Never triage, review, merge or touch anything in `client/*` until the operator says it
+  has moved from GitHub. `client/client-agent` has moved to Forge (The operator,
   2026-10-06) and is reviewed, triaged and merged like any repo.
 - If a tool call is blocked by the guard, do not retry it another way. Report
   the block on the board issue.

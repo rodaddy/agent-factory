@@ -1,6 +1,6 @@
 ---
 name: infra-health
-description: "Nagatha's hourly check of every Proxmox node and the k3s cluster from the central Prometheus, and of every failed or timed-out employee run on the board, read-only: the infra-health script judges, she reports clean hours in one line and turns each finding into one board issue, a PR through an SOP, or NEEDS RICO, and routes each failed-run cause before Rico sees it (SOF-3946)."
+description: "Nagatha's hourly check of every Proxmox node and the k3s cluster from the central Prometheus, and of every failed or timed-out employee run on the board, read-only: the infra-health script judges, she reports clean hours in one line and turns each finding into one board issue, a PR through an SOP, or NEEDS OPERATOR, and routes each failed-run cause before the operator sees it (SOF-3946)."
 ---
 
 # infra-health
@@ -74,7 +74,7 @@ Findings from host01's fleet-verify arrive as their own `Infra: alert:fleet-veri
      run `infra-request` from step 0 on your own request and open the PR.
    - **Anything no rail covers** (a PVE node down, a node NotReady): diagnose
      with `scripts/jev`, write the missing rail by PR (box manual "When a rail
-     is missing"), and report on the finding's issue; `NEEDS RICO:` per
+     is missing"), and report on the finding's issue; `NEEDS OPERATOR:` per
      `infra-request` step 7, with
      the evidence and what you think should happen. One notice per key, not
      one per hour.
@@ -83,7 +83,7 @@ Findings from host01's fleet-verify arrive as their own `Infra: alert:fleet-veri
 
 ## Failed employee runs (SOF-3946)
 
-Rico should see "handled" on the routine's issue before he sees red on the
+The operator should see "handled" on the routine's issue before he sees red on the
 board. `infra-health runs` reads every heartbeat run that failed or timed out
 after `--since`, groups them by cause, and names each cause's `route`. The
 script decides the cause; you act on the route:
@@ -132,7 +132,7 @@ headroom kept. `infra-request` step 4 uses it for every new workload.
 
 ## Already running?
 
-Rico, 2026-10-05: before anyone builds something, it is checked
+The operator, 2026-10-05: before anyone builds something, it is checked
 against what already runs. When an `Ask:` issue (or anyone) asks "is anything
 already running that does X?", answer from the inventory, never from memory:
 

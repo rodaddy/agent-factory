@@ -28,7 +28,7 @@ const prJson = (p: Pr) => ({
 	head: { sha: SHA },
 	html_url: `https://forge.example.internal/${REPO}/pulls/${p.number}`,
 	title: "Thing",
-	user: { login: "rico" },
+	user: { login: "operator" },
 	labels: p.labels.map((name) => ({ name })),
 });
 

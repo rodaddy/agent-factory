@@ -1,6 +1,6 @@
 ---
 name: fleet-verify
-description: "Nagatha's reconcile loop for a fleet-verify finding: host01's hourly deterministic verify posts each open finding to the board as an Infra: alert:fleet-verify:* issue; she diagnoses read-only, runs a rail only when rails-validate resolves the key to an active rail her seat can run and check_first shows what expect says, and turns everything else into a PR or NEEDS RICO; per-surface handling for forge CI, firing alerts and log volume and signatures, and the Sunday weekly trend digest (rtech-infra _DOCS/fleet-verify.md)."
+description: "Nagatha's reconcile loop for a fleet-verify finding: host01's hourly deterministic verify posts each open finding to the board as an Infra: alert:fleet-verify:* issue; she diagnoses read-only, runs a rail only when rails-validate resolves the key to an active rail her seat can run and check_first shows what expect says, and turns everything else into a PR or NEEDS OPERATOR; per-surface handling for forge CI, firing alerts and log volume and signatures, and the Sunday weekly trend digest (rtech-infra _DOCS/fleet-verify.md)."
 ---
 
 # fleet-verify
@@ -41,13 +41,13 @@ Work from `~/src/rtech/rtech-infra` after `git pull --ff-only`.
    Copy the key from the label; never retype or paraphrase it.
    - **Exit 1 (`NO RAIL`, or a refused value):** no rail. Propose the fix as a
      PR on the owning repo (rtech-infra, or `rtech/k3s-deploy` through
-     `infra-request` and its SOP), or `NEEDS RICO:` per `infra-request`
+     `infra-request` and its SOP), or `NEEDS OPERATOR:` per `infra-request`
      step 7 with the evidence and what you think should happen.
    - **`"status": "proposed"`:** never run it, whatever it says. Treat as no
      rail and name the rail id and its blocker on the issue.
    - **`"status": "active"` but a `requires` capability your seat lacks:**
      do not run it. Report on the issue: rail id, the missing capability, the
-     bound `rail` argv, so Rico or the owning seat can act. You hold a
+     bound `rail` argv, so the operator or the owning seat can act. You hold a
      capability only when your box manual grants it on this seat; you never
      hold `kube-write`.
    - **Active, requires met:**
@@ -67,7 +67,7 @@ Work from `~/src/rtech/rtech-infra` after `git pull --ff-only`.
    not run). Fix the reach problem only by PR to rtech-infra
    `projects/ansible/playbooks/host01-fleet-verify.yml` (credential, tool,
    network). Never fix it by hand on host01. SSH-based checks stay unverified
-   until Rico rules on a read path;
+   until the operator rules on a read path;
    say that and leave it open.
 5. **Close or leave open.** Cleared on a fresh run: close with
    `cleared at <time>` and the run time. If you moved the issue out of

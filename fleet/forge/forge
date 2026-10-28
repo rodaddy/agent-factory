@@ -185,7 +185,7 @@ export function scriptToken(harness, dir = HERE) {
 function elevate(ctx, env) {
 	if (ctx.as !== undefined) throw new Usage("--elevated cannot combine with --as");
 	if (employeeOf(undefined, env) || envHarness(env) !== "claude") throw new Usage("--elevated is for Claude sessions only");
-	ctx.stderr(`forge: ELEVATED as ${ELEVATED} (Rico-approved call)`);
+	ctx.stderr(`forge: ELEVATED as ${ELEVATED} (The operator-approved call)`);
 }
 
 const WRITES = new Set(["POST", "PATCH", "PUT"]);

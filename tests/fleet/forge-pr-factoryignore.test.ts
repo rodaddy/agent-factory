@@ -156,7 +156,7 @@ const ev = (changedFiles: number) => {
 				html_url: "https://forge.example.internal/rodaddy/demo/pulls/7",
 				title: "Docs",
 				body: BODY,
-				user: { login: "rico" },
+				user: { login: "operator" },
 				changed_files: changedFiles,
 			},
 		},

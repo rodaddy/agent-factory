@@ -54,7 +54,7 @@ paperclipai agent list -C <companyId> --json    # match on name
 2. Write the task so the report needs nothing else. It states, in this order:
    the repo and the number; what to produce (it is published on Forge; there is no shadow mode); what
    must not be touched; what done looks like; and a `backout:` line saying
-   how to undo the work the task asks for (Rico, 2026-10-05, sf#1413: every
+   how to undo the work the task asks for (The operator, 2026-10-05, sf#1413: every
    board task carries one). One task, one deliverable.
 3. Pick the report with `~/fleet/bin/task-route --skill <the skill from the
    Who does what table>` (`fleet/bin/task-route`; call it by that full path,

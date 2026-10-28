@@ -39,7 +39,7 @@ Rules, first match wins, for every blocked issue:
                    listed as waiting-author, unchanged.
   7. other         listed, unchanged.
 
-Review tasks in todo or in_progress (Rico, 2026-10-04: stalled reviews get
+Review tasks in todo or in_progress (The operator, 2026-10-04: stalled reviews get
 kickstarted unless invalid, then kicked back; the most important first):
   - invalid        PR closed/merged or head moved: cancel. A required check
                    (factory/smoke, factory/prepush) failure|error at the
@@ -59,7 +59,7 @@ kickstarted unless invalid, then kicked back; the most important first):
   - escalate       stalled again after two earlier kickstarts the board
                    accepted (refused ones do not count): one comment and
                    one high-priority `Stalled review: <title>` issue for
-                   Bishop, unless one is already open. Never Rico.
+                   Bishop, unless one is already open. Never the operator.
 Queue: every todo candidate (kickstarts and blocked-review releases) is
 ordered by priority (critical, high, medium, low), then the lowest `pri:N`
 label (unlabelled last), then oldest createdAt. Each assignee takes at most
@@ -637,7 +637,7 @@ def main(argv):
         candidates.append((it, "kickstart",
                            f"{it.get('status')}, no queued or running run, idle {int(idle)} min"))
 
-    # The crew is finite (Rico, 2026-10-04): the most important first, the
+    # The crew is finite (The operator, 2026-10-04): the most important first, the
     # rest wait in the queue. Setting todo wakes the assignee, so each one
     # takes at most its free run slots this pass.
     def rank(it):
@@ -667,7 +667,7 @@ def main(argv):
         else:
             waiting.append(it)
     for k, it in enumerate(waiting, 1):
-        # Waiting for a free reviewer is queued, not blocked (Rico, 2026-10-04:
+        # Waiting for a free reviewer is queued, not blocked (The operator, 2026-10-04:
         # the Blocked inbox holds only what is really stuck): a blocked one
         # moves to backlog, and later passes release it from there.
         plan[it["id"]] = ("queue" if it.get("status") == "blocked" else "review-next-pass",
