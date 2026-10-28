@@ -1,0 +1,136 @@
+{"rule":"worktree","line":"git worktree add /x -b y origin/main","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"git worktree in any spelling"}
+{"rule":"worktree","line":"git -C /opt/dev/sub-switcher worktree add /x","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"git worktree in any spelling"}
+{"rule":"worktree","line":"bash -lc 'git -C /r worktree move a b'","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"git worktree in any spelling"}
+{"rule":"worktree","line":"timeout 30 git worktree add /x","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"git worktree in any spelling"}
+{"rule":"worktree","line":"echo \"$(git worktree list)\"","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"git worktree in any spelling"}
+{"rule":"worktree","line":"wt -C /r switch --create b --no-cd","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not a git worktree command, or heredoc/quoted data"}
+{"rule":"worktree","line":"git log --grep worktree","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not a git worktree command, or heredoc/quoted data"}
+{"rule":"worktree","line":"echo git worktree","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not a git worktree command, or heredoc/quoted data"}
+{"rule":"worktree","line":"git commit -F - <<'EOF'\ndocs: git worktree add is refused\nEOF","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not a git worktree command, or heredoc/quoted data"}
+{"rule":"worktree","line":"echo '$(git worktree list)'","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not a git worktree command, or heredoc/quoted data"}
+{"rule":"identity","line":"git commit -m \"fix(x): thing\"","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"commit message lacks the Agent line or carries a Claude-Session link"}
+{"rule":"identity","line":"git -C /r commit --message \"fix(x): thing\" -m \"body\"","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"commit message lacks the Agent line or carries a Claude-Session link"}
+{"rule":"identity","line":"git commit -m \"fix: x\n\nAgent: claude-code · claude-opus-5-5\"","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"commit message lacks the Agent line or carries a Claude-Session link"}
+{"rule":"identity","line":"git commit -m \"fix(x): thing\n\nAgent: claude-code · claude-opus-5-5 · sub-switcher head\nClaude-Session: https://claude.ai/code/session_x\"","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"commit message lacks the Agent line or carries a Claude-Session link"}
+{"rule":"identity","line":"git commit -m \"$(cat <<'EOF'\nfix(x): thing\n\nno agent line here\nEOF\n)\"","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"commit message lacks the Agent line or carries a Claude-Session link"}
+{"rule":"identity","line":"git commit -m \"fix(x): thing\n\nAgent: claude-code · claude-opus-5-5 · sub-switcher head\"","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"Agent line present, or git writes the message itself, or not a commit"}
+{"rule":"identity","line":"git commit -m \"fix: x\n\nAgent: codex · gpt-6.1-sol · fix-911 lane\"","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"Agent line present, or git writes the message itself, or not a commit"}
+{"rule":"identity","line":"git commit -m \"fix: x\" --trailer \"Agent: claude-code · m · s\"","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"Agent line present, or git writes the message itself, or not a commit"}
+{"rule":"identity","line":"git commit --amend --no-edit","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"Agent line present, or git writes the message itself, or not a commit"}
+{"rule":"identity","line":"git commit -m \"$(cat <<'EOF'\nfix(x): thing\n\nAgent: claude-code · claude-opus-5-5 · sub-switcher head\nEOF\n)\"","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"Agent line present, or git writes the message itself, or not a commit"}
+{"rule":"cluster","line":"kubectl apply -f deploy.yaml","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"kubectl/helm verb that changes the cluster"}
+{"rule":"cluster","line":"kubectl -n web delete pod x","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"kubectl/helm verb that changes the cluster"}
+{"rule":"cluster","line":"helm -n web upgrade --install x chart/","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"kubectl/helm verb that changes the cluster"}
+{"rule":"cluster","line":"eval \"kubectl delete pod x\"","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"kubectl/helm verb that changes the cluster"}
+{"rule":"cluster","line":"kubectl --some-unknown-flag get delete pod x","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"kubectl/helm verb that changes the cluster"}
+{"rule":"cluster","line":"kubectl get pods -A","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"read verb, or not a kubectl/helm command word"}
+{"rule":"cluster","line":"kubectl config view","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"read verb, or not a kubectl/helm command word"}
+{"rule":"cluster","line":"helm list -A","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"read verb, or not a kubectl/helm command word"}
+{"rule":"cluster","line":"echo kubectl delete pod x","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"read verb, or not a kubectl/helm command word"}
+{"rule":"cluster","line":"echo '$(kubectl apply -f x.yaml)'","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"read verb, or not a kubectl/helm command word"}
+{"rule":"model-gate","line":"claude -p \"x\"","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"claude or claudex in print mode"}
+{"rule":"model-gate","line":"claude --print x","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"claude or claudex in print mode"}
+{"rule":"model-gate","line":"claude -cp x","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"claude or claudex in print mode"}
+{"rule":"model-gate","line":"claudex sol high -p 'x' < /dev/null","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"claude or claudex in print mode"}
+{"rule":"model-gate","line":"bash -c 'claude -p x'","cwd":"/opt/dev/sub-switcher","expect":"deny","why":"claude or claudex in print mode"}
+{"rule":"model-gate","line":"claude plugin test","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not print mode, or the text is data"}
+{"rule":"model-gate","line":"claude --version","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not print mode, or the text is data"}
+{"rule":"model-gate","line":"echo \"claude -p\"","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not print mode, or the text is data"}
+{"rule":"model-gate","line":"cat > notes.md <<'EOF'\nclaude -p x\nEOF","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not print mode, or the text is data"}
+{"rule":"model-gate","line":"claude -- -p","cwd":"/opt/dev/sub-switcher","expect":"allow","why":"not print mode, or the text is data"}
+{"rule":"no-tmp","line":"echo hi > /tmp/x","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"cp a /tmp/b","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"mv a /tmp/b","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"echo hi | tee /tmp/x","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"mktemp","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"mktemp -d","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"cd /tmp && touch a","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"cd /tmp","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"TMPDIR=/tmp node x.js","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"export TMPDIR=/tmp","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"cat /tmp/x","cwd":"/opt/dev","expect":"allow","why":"reads /tmp or names it as data"}
+{"rule":"no-tmp","line":"ls /tmp","cwd":"/opt/dev","expect":"allow","why":"reads /tmp or names it as data"}
+{"rule":"no-tmp","line":"echo /tmp/x","cwd":"/opt/dev","expect":"allow","why":"reads /tmp or names it as data"}
+{"rule":"no-tmp","line":"echo '/tmp/x'","cwd":"/opt/dev","expect":"allow","why":"reads /tmp or names it as data"}
+{"rule":"no-tmp","line":"declare -x TMPDIR=/tmp","cwd":"/opt/dev","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"mktemp -d -p /opt/_tmp/development/development","cwd":"/opt/dev","expect":"allow","why":"mktemp with a non-tmp folder"}
+{"rule":"ansible-apply","line":"ansible-playbook pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"applies ansible without check mode, over a local connection or inventory, or by name"}
+{"rule":"ansible-apply","line":"ansible-playbook -c local --check pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"applies ansible without check mode, over a local connection or inventory, or by name"}
+{"rule":"ansible-apply","line":"ansible-playbook --check -e ansible_connection=local pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"applies ansible without check mode, over a local connection or inventory, or by name"}
+{"rule":"ansible-apply","line":"ansible-playbook --check -i missing.yml pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"applies ansible without check mode, over a local connection or inventory, or by name"}
+{"rule":"ansible-apply","line":"ansible-playbook -i host1, -lC pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"applies ansible without check mode, over a local connection or inventory, or by name"}
+{"rule":"ansible-apply","line":"ansible-pull --check -U https://forge.example.internal/rtech/rtech-infra.git","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"applies ansible without check mode, over a local connection or inventory, or by name"}
+{"rule":"ansible-apply","line":"timeout 600 ansible-playbook pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"applies ansible without check mode, over a local connection or inventory, or by name"}
+{"rule":"ansible-apply","line":"bash -c \"ansible-playbook pb.yml\"","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"applies ansible without check mode, over a local connection or inventory, or by name"}
+{"rule":"ansible-apply","line":"ansible-playbook --check -i host1, pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"check mode or a read-only ansible command against a non-local inventory"}
+{"rule":"ansible-apply","line":"ansible-playbook -vC -i a,b pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"check mode or a read-only ansible command against a non-local inventory"}
+{"rule":"ansible-apply","line":"ansible-playbook --syntax-check pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"check mode or a read-only ansible command against a non-local inventory"}
+{"rule":"ansible-apply","line":"timeout 600 ansible-playbook --check pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"check mode or a read-only ansible command against a non-local inventory"}
+{"rule":"ansible-apply","line":"ansible-lint pb.yml","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"check mode or a read-only ansible command against a non-local inventory"}
+{"rule":"guard-files","line":"cat /home/operator/.claude/settings.json","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"names a guard file"}
+{"rule":"guard-files","line":"sed -i s/x/y/ ~/.codex/config.toml","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"names a guard file"}
+{"rule":"guard-files","line":"cd ~/.claude && printf x > settings.json","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"names a guard file"}
+{"rule":"guard-files","line":"echo x > /home/operator/fleet/hooks/bash-guard","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"names a guard file"}
+{"rule":"guard-files","line":"unlink ~/.pi/agent/extensions/fleet-guard","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"names a guard file"}
+{"rule":"guard-files","line":"mv /home/operator/fleet/hooks /home/operator/fleet-work/reviewer/x","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"names a guard file"}
+{"rule":"guard-files","line":"cat /home/operator//.codex/./hooks.json","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"names a guard file"}
+{"rule":"guard-files","line":"echo settings.json","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"no guard file named, or a guard file name used as data"}
+{"rule":"guard-files","line":"cd ~/.claude && ls","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"no guard file named, or a guard file name used as data"}
+{"rule":"guard-files","line":"cat /home/operator/fleet-work/reviewer/settings.json","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"no guard file named, or a guard file name used as data"}
+{"rule":"guard-files","line":"ls /home/operator/fleet","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"no guard file named, or a guard file name used as data"}
+{"rule":"destructive-sql","line":"psql -c \"drop table users\"","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"DROP, TRUNCATE or DELETE FROM in a psql-family command"}
+{"rule":"destructive-sql","line":"psql -h db -c 'TRUNCATE widgets'","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"DROP, TRUNCATE or DELETE FROM in a psql-family command"}
+{"rule":"destructive-sql","line":"timeout 10 psql -c 'DROP TABLE widgets'","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"DROP, TRUNCATE or DELETE FROM in a psql-family command"}
+{"rule":"destructive-sql","line":"uv run pgcli -e 'DELETE FROM widgets'","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"DROP, TRUNCATE or DELETE FROM in a psql-family command"}
+{"rule":"destructive-sql","line":"pg_restore -d app x.dump && psql -c 'DROP DATABASE old'","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"DROP, TRUNCATE or DELETE FROM in a psql-family command"}
+{"rule":"destructive-sql","line":"psql -c 'select 1'","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"read-only SQL, or destructive text with no psql-family client"}
+{"rule":"destructive-sql","line":"timeout 10 psql -c 'select 1'","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"read-only SQL, or destructive text with no psql-family client"}
+{"rule":"destructive-sql","line":"echo 'DROP TABLE x'","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"read-only SQL, or destructive text with no psql-family client"}
+{"rule":"destructive-sql","line":"psql -c 'SELECT count(*) FROM drops'","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"read-only SQL, or destructive text with no psql-family client"}
+{"rule":"forge-api","line":"curl -s https://forge.example.internal/api/v1/repos/a/b/pulls/5","cwd":"/opt/dev","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"curl -X POST \"https://forge.example.internal/api/v1/repos/a/b/issues/7/comments\" -d @c.json","cwd":"/opt/dev","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"curl --url=http://10.0.20.58:3000/api/v1/user","cwd":"/opt/dev","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"wget -qO- forge.example.internal/api/v1/user","cwd":"/opt/dev","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"bash -c 'curl -XDELETE https://forge.example.internal/api/v1/repos/a/b/issues/7/labels/3'","cwd":"/opt/dev","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"_ob/bin/forge pr view a/b 1","cwd":"/opt/dev","expect":"allow","why":"the forge CLI, a non-API Forge URL, or a URL that curl or wget does not fetch"}
+{"rule":"forge-api","line":"curl https://forge.example.internal/rodaddy/x/raw/branch/main/f","cwd":"/opt/dev","expect":"allow","why":"the forge CLI, a non-API Forge URL, or a URL that curl or wget does not fetch"}
+{"rule":"forge-api","line":"git push origin x","cwd":"/opt/dev","expect":"allow","why":"the forge CLI, a non-API Forge URL, or a URL that curl or wget does not fetch"}
+{"rule":"forge-api","line":"echo 'curl https://forge.example.internal/api/v1/user'","cwd":"/opt/dev","expect":"allow","why":"the forge CLI, a non-API Forge URL, or a URL that curl or wget does not fetch"}
+{"rule":"forge-api","line":"curl -s https://api.example.com/api/v1/user","cwd":"/opt/dev","expect":"allow","why":"the forge CLI, a non-API Forge URL, or a URL that curl or wget does not fetch"}
+{"rule":"forge-api","line":"curl -s https://forge.example.internal/api/v1/repos/a/b/pulls/5","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"curl -X POST \"https://forge.example.internal/api/v1/repos/a/b/issues/7/comments\" -d @c.json","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"curl --url=http://10.0.20.58:3000/api/v1/user","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"wget -qO- forge.example.internal/api/v1/user","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"bash -c 'curl -XDELETE https://forge.example.internal/api/v1/repos/a/b/issues/7/labels/3'","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"raw curl or wget to the Forge API"}
+{"rule":"forge-api","line":"/usr/bin/node ~/fleet/forge/forge pr view a/b 1","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"the fleet forge client, a non-API Forge URL, or no curl/wget fetch"}
+{"rule":"forge-api","line":"curl https://forge.example.internal/rodaddy/x/raw/branch/main/f","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"the fleet forge client, a non-API Forge URL, or no curl/wget fetch"}
+{"rule":"forge-api","line":"git push origin x","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"the fleet forge client, a non-API Forge URL, or no curl/wget fetch"}
+{"rule":"no-tmp","line":"echo hi > /tmp/x","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"cp a /tmp/b","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"echo hi | tee /tmp/x","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"mktemp -d","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"cd /tmp && touch a","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"TMPDIR=/tmp node x.js","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"export TMPDIR=/tmp","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"writes under /tmp, works in /tmp, or points TMPDIR there"}
+{"rule":"no-tmp","line":"cat /tmp/x","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"reads /tmp or names it as data"}
+{"rule":"no-tmp","line":"ls /tmp","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"reads /tmp or names it as data"}
+{"rule":"no-tmp","line":"echo /tmp/x","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"reads /tmp or names it as data"}
+{"rule":"no-tmp","line":"mktemp -d -p /home/operator/fleet-work/reviewer","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"mktemp with a non-tmp folder"}
+{"rule":"cluster","line":"kubectl apply -f deploy.yaml","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"kubectl/helm/argocd verb that changes the cluster"}
+{"rule":"cluster","line":"kubectl -n web delete pod x","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"kubectl/helm/argocd verb that changes the cluster"}
+{"rule":"cluster","line":"helm -n web upgrade --install x chart/","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"kubectl/helm/argocd verb that changes the cluster"}
+{"rule":"cluster","line":"argocd app delete web","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"kubectl/helm/argocd verb that changes the cluster"}
+{"rule":"cluster","line":"kubectl --foo bar delete pod x","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"verb hidden behind an unknown option (fails closed, sf#1643)"}
+{"rule":"cluster","line":"helm --foo bar uninstall x","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"verb hidden behind an unknown option (fails closed, sf#1643)"}
+{"rule":"cluster","line":"kubectl get pods -A","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"read verb, or not a kubectl/helm/argocd command word"}
+{"rule":"cluster","line":"helm list -A","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"read verb, or not a kubectl/helm/argocd command word"}
+{"rule":"cluster","line":"argocd app get web","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"read verb, or not a kubectl/helm/argocd command word"}
+{"rule":"cluster","line":"echo kubectl delete pod x","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"read verb, or not a kubectl/helm/argocd command word"}
+{"rule":"model-gate","line":"claude -p \"x\"","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"claude or claudex in print mode"}
+{"rule":"model-gate","line":"claudex sol high -p 'x' < /dev/null","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"claude or claudex in print mode"}
+{"rule":"model-gate","line":"claude --version","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"not print mode, or the text is data"}
+{"rule":"model-gate","line":"echo \"claude -p\"","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"not print mode, or the text is data"}
+{"rule":"identity","line":"git commit -m \"fix(x): thing\"","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"commit message lacks the paperclip Agent line or carries a Claude-Session link"}
+{"rule":"identity","line":"git commit -m \"fix: x\n\nAgent: paperclip · claude-opus-5-5 · sf-reviewer\nClaude-Session: https://claude.ai/code/session_x\"","cwd":"/home/operator/fleet-work/reviewer","expect":"deny","why":"commit message lacks the paperclip Agent line or carries a Claude-Session link"}
+{"rule":"identity","line":"git commit -m \"fix: x\n\nAgent: paperclip · claude-opus-5-5 · sf-reviewer\"","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"paperclip Agent line present, or git writes the message itself"}
+{"rule":"identity","line":"git commit --amend --no-edit","cwd":"/home/operator/fleet-work/reviewer","expect":"allow","why":"paperclip Agent line present, or git writes the message itself"}

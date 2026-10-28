@@ -1,0 +1,12 @@
+-- PR #302 fixer round 3 — distinguish watcher-terminalized jobs from ordinary
+-- infra-class failures so the bounded infra requeue cannot revive them forever.
+--
+-- A pending verb row can be deliberately terminalized before any runner attempt
+-- exists (for example, a pre-migration row with no recorded change base). Its
+-- status remains `failed`, but zero attempts otherwise makes it look exactly like
+-- an infra-class failure eligible for `requeueInfraFailedJobs` on every cycle.
+--
+-- This column is ADDITIVE and NULLABLE. Every existing row leaves it NULL and
+-- therefore keeps the exact requeue behavior it had before this migration. Only
+-- watcher-owned terminalization writes a bounded reason here.
+ALTER TABLE "jobs" ADD COLUMN "terminal_reason" text;

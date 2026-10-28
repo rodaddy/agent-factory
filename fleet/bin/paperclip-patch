@@ -1,0 +1,138 @@
+#!/bin/bash
+# paperclip-patch -- apply the fleet's version-pinned patches to the installed
+# Paperclip. Run as rico ON THE BOX; it never restarts Paperclip.
+#
+# Usage:
+#   paperclip-patch [--check] [--root <fleet root>] [--home <paperclip home>]
+#
+#   --root  fleet root holding paperclip-patches/ (default: this script's ../)
+#   --home  Paperclip home (default: $HOME/.paperclip)
+#   --check report only; change nothing
+#
+# The running version is the one the `paperclipai` shim executes:
+# <home>/cli/current links to installs/npm/<version>. Patches for it live at
+# <root>/paperclip-patches/<version>/<NN>-<name>.patch, unified diffs with
+# paths a/<pkg>/... relative to <install>/node_modules/@paperclipai/ (-p1).
+#
+# The patches are one ordered series, in name order: a later patch may be
+# written against an earlier one's result. The applied ones are a prefix:
+#   longest prefix whose ordered reverse dry-run is clean -> "applied <name>"
+#   the rest, as one ordered forward dry-run, clean       -> apply (unless
+#     --check) -> "patched <name>" (--check prints "would patch <name>")
+#   otherwise -> refuse naming the first patch that breaks the series, exit 1
+# The rest is applied as ONE git apply of the concatenated series, which
+# checks every hunk in order before it writes any file, so a refusal or a
+# failed apply changes nothing.
+# No patch dir for the running version is a refusal: a Paperclip upgrade must
+# be a loud event, never a silent unpatched run.
+#
+# Exit: 0 ok | 1 refused | 2 usage | 3 harness (no install, no git, apply failed)
+set -euo pipefail
+
+usage() {
+	echo "usage: paperclip-patch [--check] [--root <fleet root>] [--home <paperclip home>]" >&2
+	exit 2
+}
+harness() {
+	echo "paperclip-patch: $*" >&2
+	exit 3
+}
+
+check=0
+# Resolve the link first: fleet/install.sh installs this as
+# ~/.local/bin/paperclip-patch -> ~/fleet/bin/paperclip-patch, and BASH_SOURCE
+# is the link, so the default root was ~/.local (PR 1608 review).
+root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+home="${HOME:-}/.paperclip"
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--check) check=1 ;;
+	--root)
+		[ "$#" -ge 2 ] && [ -n "$2" ] || usage
+		root="$2"
+		shift
+		;;
+	--home)
+		[ "$#" -ge 2 ] && [ -n "$2" ] || usage
+		home="$2"
+		shift
+		;;
+	*) usage ;;
+	esac
+	shift
+done
+# Absolute from here: gapply reads each patch after cd-ing into the install.
+root="$(cd "$root" 2>/dev/null && pwd)" || usage
+
+command -v git >/dev/null 2>&1 || harness "git not found on PATH"
+current="$home/cli/current"
+[ -d "$current" ] || harness "no Paperclip install at $current"
+install="$(cd "$current" && pwd -P)"
+version="$(basename "$install")"
+pkgdir="$install/node_modules/@paperclipai"
+[ -d "$pkgdir" ] || harness "no @paperclipai packages at $pkgdir"
+
+patchdir="$root/paperclip-patches/$version"
+if [ ! -d "$patchdir" ]; then
+	echo "paperclip-patch: refused: no patches for the running Paperclip $version (expected $patchdir); port the patches to this version before running it" >&2
+	exit 1
+fi
+
+# git apply outside a repository behaves like patch(1), without fuzz. The
+# ceiling stops it from finding a repository above the install.
+gapply() {
+	(cd "$pkgdir" && GIT_CEILING_DIRECTORIES="$(dirname "$pkgdir")" git apply -p1 "$@")
+}
+
+shopt -s nullglob
+patches=()
+while IFS= read -r p; do patches+=("$p"); done < <(
+	cd "$patchdir"
+	for p in *.patch; do printf '%s\n' "$p"; done | LC_ALL=C sort
+)
+if [ "${#patches[@]}" -eq 0 ]; then
+	echo "paperclip-patch: no patches in $patchdir for Paperclip $version; nothing to do"
+	exit 0
+fi
+
+# series <from> <to>: patches[from..to) concatenated in order. Within one
+# input git apply chains hunks to the same file, so 02 sees 01's result.
+series() {
+	local i
+	for ((i = $1; i < $2; i++)); do cat "$patchdir/${patches[$i]}"; done
+}
+n="${#patches[@]}"
+
+# Pass 1: the applied prefix, longest first. git apply --reverse undoes an
+# ordered input from its end, so the series goes in forward order.
+done_n=0
+for ((k = n; k > 0; k--)); do
+	if series 0 "$k" | gapply --reverse --check >/dev/null 2>&1; then
+		done_n="$k"
+		break
+	fi
+done
+for ((i = 0; i < done_n; i++)); do echo "applied ${patches[$i]}"; done
+[ "$done_n" -lt "$n" ] || exit 0
+
+# Pass 2: the rest must apply in order on top of the install as it is.
+if ! series "$done_n" "$n" | gapply --check >/dev/null 2>&1; then
+	bad="${patches[$((n - 1))]}"
+	for ((m = done_n + 1; m < n; m++)); do
+		if ! series "$done_n" "$m" | gapply --check >/dev/null 2>&1; then
+			bad="${patches[$((m - 1))]}"
+			break
+		fi
+	done
+	echo "paperclip-patch: refused: $bad neither applies after the patches before it nor is already applied in Paperclip $version at $pkgdir; nothing was changed" >&2
+	exit 1
+fi
+
+# Pass 3: apply the rest as one series.
+if [ "$check" -eq 1 ]; then
+	for ((i = done_n; i < n; i++)); do echo "would patch ${patches[$i]}"; done
+	exit 0
+fi
+series "$done_n" "$n" | gapply || harness "applying the series failed after a clean dry-run; git apply wrote nothing, inspect $pkgdir"
+for ((i = done_n; i < n; i++)); do echo "patched ${patches[$i]}"; done
+echo "restart paperclipai to load"

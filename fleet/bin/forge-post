@@ -1,0 +1,162 @@
+#!/bin/bash
+# forge-post -- the one way a fleet employee writes to Forge.
+#
+# Usage:
+#   forge-post comment <owner/repo> <index> <body-file>
+#   forge-post pr <owner/repo> <head> <base> <title> <body-file>
+#   forge-post issue <owner/repo> <title> <body-file>
+#   forge-post issue-edit <owner/repo> <index> <body-file>
+#
+# issue-edit replaces the whole body of an existing issue.
+# <body-file> may be `-` for stdin.
+#
+# Every post carries an identity line the SCRIPT builds from the environment
+# (never from the caller's arguments or body): employee, harness, model.
+# FLEET_EFFORT, when set, adds the effort (pi-employee sets it).
+#
+# Required environment (missing or empty is exit 3, nothing is sent):
+#   FORGEJO_API_URL FORGEJO_TOKEN FLEET_EMPLOYEE FLEET_HARNESS FLEET_MODEL
+# Optional: FLEET_EFFORT PAPERCLIP_RUN_ID
+#
+# Exit: 0 posted (html_url on stdout) | 1 body or HTTP failure |
+#       2 bad argument or unknown subcommand | 3 missing environment.
+#
+# The token never reaches argv and no temp file is written: the auth header
+# goes to curl through a process substitution, the JSON body on stdin.
+set -euo pipefail
+
+usage() {
+	cat >&2 <<'USAGE'
+usage: forge-post comment <owner/repo> <index> <body-file>
+       forge-post pr <owner/repo> <head> <base> <title> <body-file>
+       forge-post issue <owner/repo> <title> <body-file>
+       forge-post issue-edit <owner/repo> <index> <body-file>
+       <body-file> may be - for stdin
+USAGE
+	exit 2
+}
+
+for name in FORGEJO_API_URL FORGEJO_TOKEN FLEET_EMPLOYEE FLEET_HARNESS FLEET_MODEL; do
+	if [ -z "${!name:-}" ]; then
+		echo "forge-post: required environment variable $name is missing or empty" >&2
+		exit 3
+	fi
+done
+
+REPO_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+INDEX_RE='^[0-9]+$'
+REF_RE='^[A-Za-z0-9._/-]+$'
+
+sub="${1:-}"
+case "$sub" in
+comment)
+	[ "$#" -eq 4 ] || usage
+	repo="$2" index="$3" body_file="$4"
+	[[ "$repo" =~ $REPO_RE ]] || usage
+	[[ "$index" =~ $INDEX_RE ]] || usage
+	;;
+pr)
+	[ "$#" -eq 6 ] || usage
+	repo="$2" head="$3" base="$4" title="$5" body_file="$6"
+	[[ "$repo" =~ $REPO_RE ]] || usage
+	[[ "$head" =~ $REF_RE ]] || usage
+	[[ "$base" =~ $REF_RE ]] || usage
+	;;
+issue)
+	[ "$#" -eq 4 ] || usage
+	repo="$2" title="$3" body_file="$4"
+	[[ "$repo" =~ $REPO_RE ]] || usage
+	;;
+issue-edit)
+	[ "$#" -eq 4 ] || usage
+	repo="$2" index="$3" body_file="$4"
+	[[ "$repo" =~ $REPO_RE ]] || usage
+	[[ "$index" =~ $INDEX_RE ]] || usage
+	;;
+*)
+	usage
+	;;
+esac
+
+# The trailing sentinel keeps the body's own trailing newlines, which $(...)
+# would otherwise strip.
+if [ "$body_file" = "-" ]; then
+	body="$(cat; printf x)"
+else
+	body="$(cat -- "$body_file"; printf x)"
+fi
+body="${body%x}"
+
+bytes="$(printf '%s' "$body" | wc -c | tr -d '[:space:]')"
+if [ "$bytes" -eq 0 ]; then
+	echo "forge-post: body is empty" >&2
+	exit 1
+fi
+if [ "$bytes" -gt 60000 ]; then
+	echo "forge-post: body too long ($bytes bytes, limit 60000)" >&2
+	exit 1
+fi
+
+identity="**agent:** $FLEET_EMPLOYEE · harness $FLEET_HARNESS · model $FLEET_MODEL · Software Factory company"
+if [ -n "${FLEET_EFFORT:-}" ]; then
+	identity="$identity · effort $FLEET_EFFORT"
+fi
+if [ -n "${PAPERCLIP_RUN_ID:-}" ]; then
+	identity="$identity · run $PAPERCLIP_RUN_ID"
+fi
+
+api="${FORGEJO_API_URL%/}"
+method=POST
+case "$sub" in
+comment)
+	url="$api/repos/$repo/issues/$index/comments"
+	payload="$(jq -n --arg identity "$identity" --arg body "$body" \
+		'{body: ($identity + "\n\n" + $body)}')"
+	;;
+pr)
+	url="$api/repos/$repo/pulls"
+	payload="$(jq -n --arg identity "$identity" --arg body "$body" \
+		--arg head "$head" --arg base "$base" --arg title "$title" \
+		'{head: $head, base: $base, title: $title, body: ($body + "\n\n---\n\n" + $identity)}')"
+	;;
+issue)
+	url="$api/repos/$repo/issues"
+	payload="$(jq -n --arg identity "$identity" --arg body "$body" --arg title "$title" \
+		'{title: $title, body: ($body + "\n\n---\n\n" + $identity)}')"
+	;;
+issue-edit)
+	method=PATCH
+	url="$api/repos/$repo/issues/$index"
+	payload="$(jq -n --arg identity "$identity" --arg body "$body" \
+		'{body: ($body + "\n\n---\n\n" + $identity)}')"
+	;;
+esac
+
+# A curl config value is a quoted string: escape backslash and double quote.
+token="${FORGEJO_TOKEN//\\/\\\\}"
+token="${token//\"/\\\"}"
+
+# Response body, then the status code on its own last line.
+if ! out="$(printf '%s' "$payload" | curl -sS -m 30 -X "$method" \
+	--config <(printf 'header = "Authorization: token %s"\nheader = "Content-Type: application/json"\n' "$token") \
+	--data-binary @- -o - -w '\n%{http_code}' "$url")"; then
+	echo "forge-post: request failed" >&2
+	exit 1
+fi
+
+code="${out##*$'\n'}"
+response="${out%$'\n'*}"
+
+if [ "$code" = "200" ] || [ "$code" = "201" ]; then
+	# A 2xx reply with no URL is not a post anyone can link to.
+	if ! printf '%s' "$response" | jq -er '.html_url | strings'; then
+		echo "forge-post: HTTP $code with no html_url in the reply" >&2
+		exit 1
+	fi
+	exit 0
+fi
+
+echo "forge-post: HTTP $code" >&2
+printf '%s' "$response" | head -c 300 >&2
+echo >&2
+exit 1

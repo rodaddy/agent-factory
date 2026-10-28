@@ -1,0 +1,22 @@
+ * stopped the agent, and re-waking it — or escalating "stranding" — would
+ * fight the human. Any newer run or wake supersedes the exemption.
+ */
+function isOperatorCancelledRun(latestRun, currentAgentId) {
+    if (latestRun?.agentId === currentAgentId &&
+        [
+            CHAT_CONTROL_RECOVERY_STOP_CODE,
+            CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
+        ].includes(latestRun.errorCode ?? ""))
+        return true;
+    if (!latestRun || latestRun.status !== "cancelled")
+        return false;
+    if (latestRun.errorCode === "operator_interrupted")
+        return true;
+    const result = parseObject(latestRun.resultJson);
+    return (result.cancelledByActorType === "user" ||
+        result.cancelledByActorType === "board");
+}
+function isUnsuccessfulTerminalIssueRun(latestRun) {
+    return Boolean(latestRun &&
+        UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(latestRun.status));
+}

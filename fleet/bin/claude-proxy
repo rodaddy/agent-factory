@@ -1,0 +1,420 @@
+#!/usr/bin/env python3
+"""claude-proxy: move the Claude Code (claude_local) employees between their
+box login, the claudex proxy and Bifrost on the Paperclip board, and set which
+GPT model a routed employee runs.
+
+Usage: claude-proxy status|secret|on|off [--via proxy|bifrost] [--agents Bishop,Adams,Ski,Nagatha]
+       claude-proxy route <agent> <model> <effort>
+       claude-proxy route <agent> back
+
+Env: PAPERCLIP_API_URL (default http://10.0.20.105:3100),
+  PAPERCLIP_BOARD_TOKEN (required; Authorization: Bearer header only),
+  PAPERCLIP_COMPANY_ID (required),
+  CLAUDE_PROXY_KEY_CMD (default next to this script: cliproxy-paperclip-key,
+  or bifrost-claudex-key with --via bifrost).
+
+--via picks the route the command acts on. proxy (the default) is the
+  subscription proxy, direct. bifrost is Bifrost's Anthropic endpoint, so the
+  gateway sees the employee: its own base URL, its own board secret, and the
+  env key ANTHROPIC_CUSTOM_HEADERS. Each employee may have its own Bifrost
+  virtual key, the board secret `bifrost-vk-<lowercase name>`; a token on it
+  counts as the bifrost route, so Bifrost's metrics name the employee.
+status: one JSON line per agent {name, adapterType, model, proxy, via, baseUrl}.
+  Read-only. proxy is on/off/partial for the --via route. via is the route the
+  agent is on now: bifrost or proxy by the secret its ANTHROPIC_AUTH_TOKEN
+  refs (the shared Bifrost secret or the agent's own key), off when it has
+  neither URL nor token, partial otherwise. It is decided
+  by secret id because a GET redacts every plain env value, the URL included.
+secret: create the --via route's board secret from the key command, or rotate
+  it (POST /api/secrets/:id/rotate; PATCH /api/secrets/:id is metadata-only and
+  drops a value) and refuse unless the reply shows a new version.
+on/off: set or remove env ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, plus
+  ANTHROPIC_CUSTOM_HEADERS with --via bifrost. `on --via bifrost` points each
+  agent's token at its own key when that secret exists, else at the shared
+  one, and prints "key": "own" or "shared"; the shared secret is required
+  only for an agent with no own key. `on --via proxy` also removes
+  ANTHROPIC_CUSTOM_HEADERS, so an employee moved back carries no Bifrost
+  header. The PATCH carries adapterConfig.env only: the board merges top-level
+  keys and restores redacted env values, but never restores the rest of a
+  redacted GET. One exception: a GPT model id is kept in step with the route
+  in the same PATCH (claudex/<id> through Bifrost, the bare id otherwise).
+route: set the GPT model and effort of one agent that is already on a route
+  (via proxy or bifrost; anything else is refused and nothing changes), or put
+  it `back` on claude-opus-5-5 at high, removing the env keys a GPT route
+  added. One PATCH: model, effort, env.
+  Models: gpt-6.1-sol gpt-6-astra gpt-6-luna.
+  Efforts: low medium high xhigh max.
+  Output: one JSON line {name, via, model, effort, http}.
+
+Two rules a change here must not break:
+  1. The board's model field carries the LITERAL model id. The alias
+     `sonnet[1m]` works for the harness but reads as Sonnet on the board
+     (Rico rejected it, 2026-10-03). The alias env keys point at the id; the
+     model field is the id.
+  2. Every Bifrost request carries x-bf-cache-key: claudex-nocache and
+     x-bf-cache-no-store: true. Without them Bifrost's semantic cache can
+     answer an agent turn from cache. Nothing secret goes in that header
+     value: the key rides ANTHROPIC_AUTH_TOKEN as a secret_ref.
+
+Exit 0 all PATCHes 2xx; 1 refusal or non-2xx; 2 bad usage.
+The key and the board token never reach stdout, stderr, or a file.
+"""
+import json
+import os
+import shlex
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+BASE_URL = "https://codex-proxy.example.internal"
+SECRET_NAME = "CLIProxyAPI - paperclip client key"
+DEFAULT_AGENTS = "Bishop,Adams,Ski,Nagatha"
+KEYS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")
+HEADERS_KEY = "ANTHROPIC_CUSTOM_HEADERS"
+VIAS = {
+    "proxy": {"base": BASE_URL, "secret": SECRET_NAME, "key_cmd": "cliproxy-paperclip-key", "headers": None, "keys": KEYS},
+    "bifrost": {
+        "base": "https://bifrost.example.internal/anthropic",
+        "secret": "Bifrost - claudex virtual key",
+        "key_cmd": "bifrost-claudex-key",
+        "headers": "x-bf-cache-key: claudex-nocache\nx-bf-cache-no-store: true",
+        "keys": KEYS + (HEADERS_KEY,),
+    },
+}
+MODELS = ("gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+BIFROST_PREFIX = "claudex/"
+BACK_MODEL, BACK_EFFORT = "claude-opus-5-5", "high"
+ALIAS_KEY = "ANTHROPIC_DEFAULT_SONNET_MODEL"
+OWN_KEY_PREFIX = "bifrost-vk-"
+# The env keys `route <gpt>` adds besides FLEET_MODEL; `route back` removes them
+# (with ALIAS_KEY and every ALIAS_KEY + "_" key).
+ROUTE_KEYS = (
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+    "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
+    "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS",
+)
+USAGE = (
+    "usage: claude-proxy status|secret|on|off [--via proxy|bifrost] [--agents A,B,...]\n"
+    f"       claude-proxy route <agent> <{'|'.join(MODELS)}> <{'|'.join(EFFORTS)}>\n"
+    "       claude-proxy route <agent> back"
+)
+
+
+def die(msg, code=1):
+    sys.stderr.write(f"claude-proxy: {msg}\n")
+    sys.exit(code)
+
+
+def out(obj):
+    print(json.dumps(obj), flush=True)
+
+
+def plain(value):
+    return {"type": "plain", "value": value}
+
+
+class Board:
+    def __init__(self, api, token):
+        self.api = api.rstrip("/")
+        self.token = token
+
+    def call(self, method, path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(self.api + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                raw = r.read().decode()
+                return r.status, (json.loads(raw) if raw else None)
+        except urllib.error.HTTPError as e:
+            return e.code, None
+        except Exception as e:  # never echo the token or a body
+            die(f"board {method} {path} failed: {type(e).__name__}")
+
+    def get(self, path):
+        code, body = self.call("GET", path)
+        if not 200 <= code < 300:
+            die(f"board GET {path} returned {code}")
+        return body
+
+
+def parse_args(argv):
+    if not argv or argv[0] not in ("status", "secret", "on", "off", "route"):
+        die(USAGE, 2)
+    cmd, rest, agents, via = argv[0], argv[1:], DEFAULT_AGENTS, "proxy"
+    if cmd == "route":
+        if len(rest) == 2 and rest[1] == "back":
+            return cmd, [rest[0]], via, (BACK_MODEL, BACK_EFFORT, True)
+        if len(rest) == 3 and rest[1] in MODELS and rest[2] in EFFORTS:
+            return cmd, [rest[0]], via, (rest[1], rest[2], False)
+        die(USAGE, 2)
+    while rest:
+        if rest[0] == "--agents" and len(rest) >= 2:
+            agents, rest = rest[1], rest[2:]
+        elif rest[0].startswith("--agents="):
+            agents, rest = rest[0].split("=", 1)[1], rest[1:]
+        elif rest[0] == "--via" and len(rest) >= 2:
+            via, rest = rest[1], rest[2:]
+        elif rest[0].startswith("--via="):
+            via, rest = rest[0].split("=", 1)[1], rest[1:]
+        else:
+            die(USAGE, 2)
+    names = [n.strip() for n in agents.split(",") if n.strip()]
+    if not names or via not in VIAS:
+        die(USAGE, 2)
+    return cmd, names, via, None
+
+
+def find_secret(board, cid, name=SECRET_NAME):
+    secrets = board.get(f"/api/companies/{cid}/secrets")
+    if isinstance(secrets, dict):
+        secrets = secrets.get("secrets") or secrets.get("items") or []
+    for s in secrets or []:
+        if isinstance(s, dict) and s.get("name") == name:
+            return s
+    return None
+
+
+def secret_ids(board, cid):
+    """The board id of each route's secret, None where the secret is absent."""
+    ids = {}
+    for via, v in VIAS.items():
+        s = find_secret(board, cid, v["secret"])
+        ids[via] = s.get("id") if s else None
+    return ids
+
+
+def own_key_id(board, cid, name):
+    """The board id of the agent's own Bifrost key (`bifrost-vk-<lowercase name>`), None if absent."""
+    s = find_secret(board, cid, OWN_KEY_PREFIX + name.lower())
+    return s.get("id") if s else None
+
+
+def proxy_state(cfg, secret_id_ok, keys=KEYS):
+    env = (cfg or {}).get("env") or {}
+    present = [k for k in keys if k in env]
+    if not present:
+        return "off"
+    tok = env.get("ANTHROPIC_AUTH_TOKEN")
+    if len(present) == len(keys) and isinstance(tok, dict) and tok.get("type") == "secret_ref" and secret_id_ok(tok.get("secretId")):
+        return "on"
+    return "partial"
+
+
+def via_state(cfg, sids, own_sid=None):
+    """Which route the agent is on, by the secret its token refs (never by URL: a GET redacts it).
+    A token on the agent's own Bifrost key (`own_sid`) is the bifrost route."""
+    env = (cfg or {}).get("env") or {}
+    if not any(k in env for k in KEYS):
+        return "off"
+    tok = env.get("ANTHROPIC_AUTH_TOKEN")
+    if "ANTHROPIC_BASE_URL" in env and isinstance(tok, dict) and tok.get("type") == "secret_ref":
+        for via, sid in sids.items():
+            if sid is not None and tok.get("secretId") == sid:
+                return via
+        if own_sid is not None and tok.get("secretId") == own_sid:
+            return "bifrost"
+    return "partial"
+
+
+def base_url_of(cfg):
+    v = ((cfg or {}).get("env") or {}).get("ANTHROPIC_BASE_URL")
+    return v.get("value") if isinstance(v, dict) else v
+
+
+def bare_gpt(model):
+    """The bare id when `model` is a GPT route (with or without the Bifrost prefix), else None."""
+    if not isinstance(model, str):
+        return None
+    bare = model[len(BIFROST_PREFIX):] if model.startswith(BIFROST_PREFIX) else model
+    return bare if bare in MODELS else None
+
+
+def emitted_id(bare, via):
+    return BIFROST_PREFIX + bare if via == "bifrost" else bare
+
+
+def cmd_status(board, cid, names, via):
+    agents = board.get(f"/api/companies/{cid}/agents") or []
+    sids = secret_ids(board, cid)
+    sid = sids[via]
+    by_name = {a.get("name"): a for a in agents if isinstance(a, dict)}
+    for n in names:
+        a = by_name.get(n)
+        if a is None:
+            out({"name": n, "adapterType": None, "model": None, "proxy": None, "via": None, "baseUrl": None, "missing": True})
+            continue
+        cfg = a.get("adapterConfig") or {}
+        own = own_key_id(board, cid, n)
+        ok = {sid} | ({own} if via == "bifrost" else set())
+        out({
+            "name": n,
+            "adapterType": a.get("adapterType"),
+            "model": cfg.get("model"),
+            "proxy": proxy_state(cfg, lambda x: x is not None and x in ok, VIAS[via]["keys"]),
+            "via": via_state(cfg, sids, own),
+            "baseUrl": base_url_of(cfg),
+        })
+    return 0
+
+
+def cmd_secret(board, cid, via):
+    name = VIAS[via]["secret"]
+    kc = os.environ.get("CLAUDE_PROXY_KEY_CMD") or os.path.join(os.path.dirname(os.path.abspath(__file__)), VIAS[via]["key_cmd"])
+    try:
+        r = subprocess.run(shlex.split(kc), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
+    except Exception as e:
+        die(f"key command failed: {type(e).__name__}")
+    key = r.stdout.decode(errors="replace").strip()
+    if r.returncode != 0 or not key:
+        die("key command returned no key")
+    existing = find_secret(board, cid, name)
+    if existing:
+        code, body = board.call("POST", f"/api/secrets/{existing.get('id')}/rotate", {"value": key})
+        action, sid = "rotated", existing.get("id")
+    else:
+        code, body = board.call("POST", f"/api/companies/{cid}/secrets", {"name": name, "provider": "local_encrypted", "value": key})
+        action, sid = "created", (body or {}).get("id")
+    del key
+    if not 200 <= code < 300:
+        die(f"secret {action[:-1]} returned {code}")
+    if action == "rotated":
+        before, after = existing.get("latestVersion"), (body or {}).get("latestVersion")
+        if not isinstance(after, int) or (isinstance(before, int) and after <= before):
+            die(f"secret rotate returned {code} but no new version ({before} -> {after})")
+        out({"secret": name, "id": sid, "action": action, "version": after})
+        return 0
+    out({"secret": name, "id": sid, "action": action})
+    return 0
+
+
+def resolve_agents(board, cid, names):
+    """Each named agent's full record, or die before anything is changed."""
+    listing = board.get(f"/api/companies/{cid}/agents") or []
+    by_name = {}
+    for a in listing:
+        if isinstance(a, dict):
+            by_name.setdefault(a.get("name"), []).append(a)
+    full = []
+    for n in names:
+        hits = by_name.get(n) or []
+        if len(hits) != 1:
+            die(f"agent {n}: {len(hits)} matches on the board; nothing changed")
+        code, a = board.call("GET", f"/api/agents/{hits[0].get('id')}")
+        if not 200 <= code < 300 or not isinstance(a, dict):
+            die(f"agent {n}: GET returned {code}; nothing changed")
+        if a.get("adapterType") != "claude_local":
+            die(f"agent {n} is {a.get('adapterType')}, not claude_local; nothing changed")
+        full.append((n, a))
+    return full
+
+
+def cmd_switch(board, cid, names, via, turn_on):
+    v = VIAS[via]
+    flag = "" if via == "proxy" else f" --via {via}"
+    full = resolve_agents(board, cid, names)
+    keys = {}  # name -> (secret id, "own" | "shared"); every key is resolved before any PATCH
+    if turn_on:
+        shared = find_secret(board, cid, v["secret"])
+        for n, _ in full:
+            own = own_key_id(board, cid, n) if via == "bifrost" else None
+            if own is not None:
+                keys[n] = (own, "own")
+            elif shared:
+                keys[n] = (shared.get("id"), "shared")
+            else:
+                hint = f" and no own key '{OWN_KEY_PREFIX}{n.lower()}'" if via == "bifrost" else ""
+                die(f"agent {n}: board secret '{v['secret']}' missing{hint}; run `claude-proxy secret{flag}` first; nothing changed")
+    changed, failed = [], False
+    for n, a in full:
+        cfg = a.get("adapterConfig") or {}
+        env = dict(cfg.get("env") or {})
+        if turn_on:
+            env["ANTHROPIC_BASE_URL"] = plain(v["base"])
+            env["ANTHROPIC_AUTH_TOKEN"] = {"type": "secret_ref", "secretId": keys[n][0], "version": "latest"}
+            if v["headers"]:
+                env[HEADERS_KEY] = plain(v["headers"])
+            else:
+                env.pop(HEADERS_KEY, None)
+        else:
+            for k in v["keys"]:
+                env.pop(k, None)
+        patch = {"env": env}
+        bare = bare_gpt(cfg.get("model"))
+        if bare:  # a GPT route: the id follows the route the agent ends up on
+            want = emitted_id(bare, via if turn_on else "proxy")
+            if want != cfg.get("model"):
+                patch["model"] = want
+            if ALIAS_KEY in env:
+                env[ALIAS_KEY] = plain(want + "[1m]")
+        code, _ = board.call("PATCH", f"/api/agents/{a.get('id')}", {"adapterConfig": patch})
+        line = {"name": n, "proxy": "on" if turn_on else "off", "http": code}
+        if via != "proxy":
+            line = {"name": n, "proxy": line["proxy"], "via": via, "http": code}
+            if turn_on:
+                line = {"name": n, "proxy": "on", "via": via, "key": keys[n][1], "http": code}
+        out(line)
+        if 200 <= code < 300:
+            changed.append(n)
+        else:
+            failed = True
+    if failed:
+        die(f"non-2xx PATCH; already changed: {','.join(changed) or 'none'}")
+    return 0
+
+
+def cmd_route(board, cid, name, bare, effort, back):
+    sids = secret_ids(board, cid)
+    ((n, a),) = resolve_agents(board, cid, [name])
+    cfg = a.get("adapterConfig") or {}
+    via = via_state(cfg, sids, own_key_id(board, cid, n))
+    if via not in VIAS:
+        die(f"agent {n} is not on a route (via {via}); run `claude-proxy on` first; nothing changed")
+    env = dict(cfg.get("env") or {})
+    if back:
+        model = bare
+        env = {k: x for k, x in env.items() if k != ALIAS_KEY and not k.startswith(ALIAS_KEY + "_") and k not in ROUTE_KEYS}
+        env["FLEET_MODEL"] = plain(bare)
+    else:
+        model = emitted_id(bare, via)  # the literal id, never the sonnet alias
+        env.update({
+            "FLEET_MODEL": plain(bare),
+            ALIAS_KEY: plain(model + "[1m]"),
+            ALIAS_KEY + "_NAME": plain(bare),
+            ALIAS_KEY + "_DESCRIPTION": plain("Codex subscription route"),
+            ALIAS_KEY + "_SUPPORTED_CAPABILITIES": plain("effort,thinking,adaptive_thinking,interleaved_thinking"),
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": plain("288000"),
+            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": plain("92"),
+            "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT": plain("1"),
+            "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS": plain("1"),
+        })
+    code, _ = board.call("PATCH", f"/api/agents/{a.get('id')}", {"adapterConfig": {"model": model, "effort": effort, "env": env}})
+    out({"name": n, "via": via, "model": model, "effort": effort, "http": code})
+    if not 200 <= code < 300:
+        die(f"agent {n}: PATCH returned {code}")
+    return 0
+
+
+def main():
+    cmd, names, via, route = parse_args(sys.argv[1:])
+    token = os.environ.get("PAPERCLIP_BOARD_TOKEN")
+    cid = os.environ.get("PAPERCLIP_COMPANY_ID")
+    if not token or not cid:
+        die("PAPERCLIP_BOARD_TOKEN and PAPERCLIP_COMPANY_ID are required", 2)
+    board = Board(os.environ.get("PAPERCLIP_API_URL") or "http://10.0.20.105:3100", token)
+    if cmd == "status":
+        return cmd_status(board, cid, names, via)
+    if cmd == "secret":
+        return cmd_secret(board, cid, via)
+    if cmd == "route":
+        return cmd_route(board, cid, names[0], *route)
+    return cmd_switch(board, cid, names, via, cmd == "on")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

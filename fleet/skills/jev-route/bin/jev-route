@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""jev-route (sf#1169): pick the review pair for a PR from known factors plus Jev.
+
+Usage: jev-route <owner/repo> <pr-number> [--last-verdict V] [--seniors-loaded]
+
+Env: FORGEJO_API_URL, FORGEJO_TOKEN (header only); TYPESAFE_API_KEY (the key src/jev/client.ts uses; JEV_API_KEY also read) optional.
+Output: JSON {pair, depth, humanRequired, reasons, jev, reviewers}.
+Deterministic factors decide; Jev is advisory and can only RAISE to senior.
+No Jev signal is never a pass: on any failure jev is "unavailable".
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+
+JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
+JEV_MODEL = "jev-1.13.0"
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLASSIFIER_CANDIDATES = [
+    os.path.join(HERE, "../../../../config/jev/classifiers/pr-review-depth.json"),
+    # The fleet box has no repo checkout: the deploy copies the classifier beside the skill.
+    os.path.join(HERE, "../pr-review-depth.json"),
+]
+
+SENIOR_RULES = [
+    ("secrets", re.compile(r"(auth|secret|credential|token)", re.I), True),
+    ("migrations", re.compile(r"migration", re.I), False),
+    ("deploy", re.compile(r"(^|/)(deploy|k8s|manifests)(/|$)|^\.forgejo/workflows/", re.I), True),
+    ("review rules", re.compile(r"(^|/)skills/(review-dispatch|review-pr)(/|$)|^scripts/actions/[^/]*review", re.I), False),
+]
+DOCS = re.compile(r"(\.md$|^_DOCS/|^_reports/|^docs/)")
+BIG_FILES, BIG_LINES = 20, 800
+# A Pi-hole refusal window on the fleet box lasts tens of seconds (sf#1241).
+FORGE_RETRIES, FORGE_RETRY_WAIT = 2, 25
+
+
+def die(msg, code=2):
+    sys.stderr.write(f"jev-route: {msg}\n")
+    sys.exit(code)
+
+
+def forge_get(path):
+    api = os.environ.get("FORGEJO_API_URL", "").rstrip("/")
+    token = os.environ.get("FORGEJO_TOKEN", "")
+    if not api or not token:
+        die("FORGEJO_API_URL and FORGEJO_TOKEN are required")
+    # curl, not urllib: while the box's resolver is rate-limited (rtech-infra#2026)
+    # ~/.curlrc pins Forge's address, and only curl reads it. The token goes on
+    # stdin (-H @-), never argv.
+    wait = float(os.environ.get("JEV_ROUTE_RETRY_WAIT", FORGE_RETRY_WAIT))
+    for attempt in range(FORGE_RETRIES + 1):
+        try:
+            r = subprocess.run(["curl", "-fsS", "-g", "--max-time", "20", "-H", "@-",
+                                "-H", "Accept: application/json", api + path],
+                               input=f"Authorization: token {token}\n", capture_output=True, text=True, timeout=30)
+        except Exception as e:  # never echo the token or the body
+            die(f"forge GET {path} failed: {type(e).__name__}")
+        if r.returncode == 0:
+            try:
+                return json.loads(r.stdout)
+            except ValueError as e:
+                die(f"forge GET {path} failed: {type(e).__name__}")
+        # curl's own error line names the host and the failure, never the header.
+        err = (r.stderr.strip().splitlines() or [""])[-1][:200]
+        why = f"curl exit {r.returncode}" + (f": {err}" if err else "")
+        if attempt < FORGE_RETRIES and r.returncode in FORGE_TRANSIENT_CURL:
+            sys.stderr.write(f"jev-route: forge GET {path}: {why}; retry {attempt + 1}/{FORGE_RETRIES} in {wait:g}s\n")
+            time.sleep(wait)
+            continue
+        die(f"forge GET {path} failed: {why}")
+
+
+# A failed name lookup (6) or a refused connection (7): the box's resolver or Forge
+# blinked (SOF-1721). curl exit 22 is an HTTP status (401, 403, 404), an answer, never retried.
+FORGE_TRANSIENT_CURL = (6, 7)
+
+
+def ask_jev(key, title, files):
+    path = next((p for p in CLASSIFIER_CANDIDATES if os.path.exists(p)), None)
+    if path is None:
+        return "unavailable"
+    try:
+        with open(path) as f:
+            c = json.load(f)
+        levels = list(c["criteria"].keys())
+        q = {"type": "score", "instructions": c["ask"], "criteria": [c["criteria"][k] for k in levels]}
+        state = {"title": title, "files": "\n".join(files), "diff": ""}
+        body = json.dumps({"model": JEV_MODEL, "state": state, "questions": {c["id"]: q}}).encode()
+        req = urllib.request.Request(JEV_ENDPOINT, data=body, method="POST",
+                                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            a = json.loads(r.read().decode())["answers"][c["id"]]
+        score, conf = a["score"], float(a["confidence"])
+        if not isinstance(score, (int, float)) or not 0 <= score <= len(levels) - 1:
+            return "unavailable"
+        level = levels[int(round(score))]
+        return {"level": level, "score": score, "confidence": conf, "confident": conf >= float(c.get("confident", 0.7))}
+    except Exception:
+        return "unavailable"
+
+
+def main(argv):
+    pos, last, loaded, i = [], None, False, 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--last-verdict":
+            if i + 1 >= len(argv):
+                die("--last-verdict needs a value")
+            last, i = argv[i + 1], i + 2
+            continue
+        if a == "--seniors-loaded":
+            loaded = True
+        elif a.startswith("--"):
+            die(f"unknown flag {a}")
+        else:
+            pos.append(a)
+        i += 1
+    if len(pos) != 2 or not re.fullmatch(r"[\w.-]+/[\w.-]+", pos[0]) or not pos[1].isdigit():
+        die("usage: jev-route <owner/repo> <pr-number> [--last-verdict V] [--seniors-loaded]")
+    repo, num = pos
+    pr = forge_get(f"/repos/{repo}/pulls/{num}")
+    files = forge_get(f"/repos/{repo}/pulls/{num}/files")
+    names = [f.get("filename", "") for f in files]
+    lines = sum(int(f.get("additions", 0)) + int(f.get("deletions", 0)) for f in files)
+
+    reasons, senior, human = [], False, False
+    for label, rx, needs_human in SENIOR_RULES:
+        hit = [n for n in names if rx.search(n)]
+        if hit:
+            senior = True
+            human = human or needs_human
+            reasons.append(f"senior: {label} ({', '.join(hit[:3])})")
+    if len(names) > BIG_FILES or lines > BIG_LINES:
+        senior = True
+        reasons.append(f"senior: size ({len(names)} files, {lines} lines)")
+    docs_only = bool(names) and all(DOCS.search(n) for n in names)
+
+    jev = "unavailable"
+    key = os.environ.get("TYPESAFE_API_KEY", "") or os.environ.get("JEV_API_KEY", "")
+    if key:
+        jev = ask_jev(key, pr.get("title", ""), names)
+    if isinstance(jev, dict) and jev["confident"] and jev["level"] == "high" and not senior:
+        senior = True
+        reasons.append("senior: jev reads high")
+
+    if senior:
+        pair = "senior"
+    elif last == "approve-with-fixes":
+        pair = "junior"
+        reasons.append("junior: last verdict approve-with-fixes")
+    elif loaded:
+        pair = "junior"
+        reasons.append("junior: seniors loaded")
+    else:
+        pair = "senior"
+        reasons.append("senior: default")
+    depth = "FULL" if senior else ("LIGHT" if docs_only else "STANDARD")
+    # One reviewer for the obviously fine (Rico, 2026-10-06): no senior factor,
+    # and a confident Jev "low", or docs-only with Jev unavailable. Any other Jev
+    # reading on docs-only is a disagreement: two. Unavailable alone never passes code.
+    jev_low = isinstance(jev, dict) and jev["confident"] and jev["level"] == "low"
+    light_ok = depth == "LIGHT" and jev == "unavailable"
+    one = not senior and not human and last != "fix-first" and (jev_low or light_ok)
+    if one:
+        reasons.append("one reviewer: " + ("jev reads low" if jev_low else "docs only, jev unavailable"))
+    out = {"pair": pair, "depth": depth, "humanRequired": human, "reasons": reasons, "jev": jev, "reviewers": 1 if one else 2}
+    print(json.dumps(out))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

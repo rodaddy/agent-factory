@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""infra-health: read-only Proxmox + k3s health and fit reporter (sf#1214),
+and the failed-employee-run router (SOF-3946).
+
+Reads the central Prometheus HTTP API and the Paperclip board API with GET
+only; never writes anything, except `runs --publish`, which posts one comment.
+
+  infra-health [check] [--base-url URL]
+  infra-health fit --cpu <millicores> --memory <MiB> [--replicas N] [--base-url URL]
+  infra-health runs [--since ISO8601] [--limit N] [--board-url URL]
+  infra-health runs --publish <issue> [--since ISO8601] [--min-gap-min N] [--limit N]
+  infra-health runs --feed <issue> [--max-age-min N]
+
+`runs` reads the board's heartbeat runs (PAPERCLIP_API_URL, PAPERCLIP_API_KEY,
+PAPERCLIP_COMPANY_ID), keeps the ones that failed or timed out after --since
+(default: one hour ago), and groups them by cause, each cause with its route:
+`count` (benign, counted only), `nagatha` (infra, hers) or `bishop` (harness).
+
+The runs feed (SOF-12351): a bridged seat cannot read heartbeat-runs (the
+sandbox bridge's route allowlist is a Paperclip constant, SOF-11252), but it
+can read an issue's comments. A host-side seat runs `runs --publish <issue>`:
+it computes `runs` from the window after the newest feed comment's checkedAt
+(one hour when there is none) and posts it on <issue> as one comment, unless
+the newest feed comment is younger than --min-gap-min (default 55), so the
+windows tile with no gap and at most about one post an hour. A bridged seat
+runs `runs --feed <issue>`: it prints the newest feed comment's `runs` JSON,
+with `source` added, and exits 1 when there is none or it is older than
+--max-age-min (default 120).
+
+Exit 0 on a completed run, 1 on a harness error (one stderr line, no stdout),
+2 on bad usage.
+"""
+import argparse
+import json
+import math
+import os
+import sys
+import urllib.error
+import urllib.parse
+import re
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+DEFAULT_BASE = "http://10.0.20.50:9090"
+PVE = 'job="proxmox-nodes"'
+FS = 'job="proxmox-nodes",fstype!~"tmpfs|overlay|squashfs|ramfs"'
+
+Q_PVE_UP = f"up{{{PVE}}}"
+Q_PVE_LOAD = f"node_load1{{{PVE}}}"
+Q_PVE_CORES = f'count by (instance) (node_cpu_seconds_total{{{PVE},mode="idle"}})'
+Q_PVE_MEM = f"node_memory_MemAvailable_bytes{{{PVE}}} / node_memory_MemTotal_bytes{{{PVE}}}"
+Q_PVE_DISK = f"node_filesystem_avail_bytes{{{FS}}} / node_filesystem_size_bytes{{{FS}}}"
+Q_K3S_READY = 'kube_node_status_condition{condition="Ready",status="true"}'
+# Requests of pods that still hold their node: kube-state-metrics keeps the
+# request series of Succeeded/Failed pods until the pod object is deleted, and
+# the scheduler does not count them (SOF-2712: finished image-builds pods put
+# k3s-node-01 at 1.14 of allocatable while the live pods held 0.92).
+Q_REQ = ('sum by (node) (kube_pod_container_resource_requests{{resource="{r}"}}'
+         ' * on (namespace, pod, uid) group_left () max by (namespace, pod, uid)'
+         ' (kube_pod_status_phase{{phase=~"Pending|Running|Unknown"}} == 1))')
+Q_ALLOC = 'kube_node_status_allocatable{{resource="{r}"}}'
+Q_PODS = 'kube_pod_status_phase{phase=~"Pending|Failed|Unknown"} == 1'
+Q_WAIT = ('kube_pod_container_status_waiting_reason{reason=~"CrashLoopBackOff|ImagePullBackOff'
+          '|ErrImagePull|CreateContainerConfigError"} == 1')
+Q_PVC = 'kube_persistentvolumeclaim_status_phase{phase!="Bound"} == 1'
+Q_ARGO = "argocd_app_info"
+Q_TARGETS = "up == 0"
+# Every firing alert the fleet's Prometheus rules raise (Watchdog is the
+# always-firing heartbeat, not a problem).
+Q_ALERTS = 'ALERTS{alertstate="firing",alertname!="Watchdog"}'
+
+
+class HarnessError(Exception):
+    pass
+
+
+class Usage(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write(f"infra-health: usage error: {message}\n")
+        sys.exit(2)
+
+
+def query(base, promql):
+    url = base.rstrip("/") + "/api/v1/query?" + urllib.parse.urlencode({"query": promql})
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=20) as r:
+            body = r.read()
+    except urllib.error.HTTPError as e:
+        raise HarnessError(f"prometheus HTTP {e.code} for {promql}")
+    except (urllib.error.URLError, OSError) as e:
+        raise HarnessError(f"prometheus unreachable at {base}: {e}")
+    try:
+        data = json.loads(body)
+    except ValueError:
+        raise HarnessError(f"prometheus returned unparseable body for {promql}")
+    if not isinstance(data, dict) or data.get("status") != "success":
+        raise HarnessError(f"prometheus status {data.get('status') if isinstance(data, dict) else '?'} for {promql}")
+    out = []
+    for s in (data.get("data") or {}).get("result") or []:
+        try:
+            out.append((s.get("metric") or {}, float(s["value"][1])))
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise HarnessError(f"prometheus returned malformed sample for {promql}")
+    return out
+
+
+def r3(x):
+    return None if x is None else round(x, 3)
+
+
+def by(samples, label):
+    return {m.get(label, ""): v for m, v in samples}
+
+
+def k3s_nodes(base):
+    ready = by(query(base, Q_K3S_READY), "node")
+    req = {r: by(query(base, Q_REQ.format(r=r)), "node") for r in ("cpu", "memory")}
+    alloc = {r: by(query(base, Q_ALLOC.format(r=r)), "node") for r in ("cpu", "memory")}
+    names = sorted(set(ready) | set(alloc["cpu"]) | set(alloc["memory"]))
+    return names, ready, req, alloc
+
+
+def check(base):
+    findings = []
+
+    def add(key, sev, what, ev):
+        findings.append({"key": key, "severity": sev, "what": what, "evidence": ev})
+
+    up = by(query(base, Q_PVE_UP), "instance")
+    if not up:
+        add("pve-nodata", "crit", "no Proxmox up samples returned", Q_PVE_UP)
+    load = by(query(base, Q_PVE_LOAD), "instance")
+    cores = by(query(base, Q_PVE_CORES), "instance")
+    mem = by(query(base, Q_PVE_MEM), "instance")
+    pve = []
+    for inst in sorted(set(up) | set(load) | set(mem)):
+        lpc = load[inst] / cores[inst] if inst in load and cores.get(inst) else None
+        pve.append({"instance": inst, "up": up.get(inst) == 1, "loadPerCore": r3(lpc),
+                    "memAvailableRatio": r3(mem.get(inst))})
+        if inst not in up:
+            add(f"pve-nodata:{inst}", "warn", f"no up sample for Proxmox node {inst}", Q_PVE_UP)
+        if up.get(inst) == 0:
+            add(f"pve-down:{inst}", "crit", f"Proxmox node {inst} is down", Q_PVE_UP)
+        if lpc is not None and lpc > 1.5:
+            add(f"pve-load:{inst}", "warn", f"load per core {lpc:.2f} > 1.5 on {inst}",
+                f"sum by (instance) ({Q_PVE_LOAD}) / {Q_PVE_CORES}")
+        if inst in mem and mem[inst] < 0.10:
+            add(f"pve-mem:{inst}", "crit", f"memory available {mem[inst]:.3f} < 0.10 on {inst}", Q_PVE_MEM)
+    for m, v in query(base, Q_PVE_DISK):
+        inst, mp = m.get("instance", ""), m.get("mountpoint", "")
+        if v < 0.05:
+            add(f"pve-disk:{inst}:{mp}", "crit", f"disk free {v:.3f} < 0.05 on {inst} {mp}", Q_PVE_DISK)
+        elif v < 0.10:
+            add(f"pve-disk:{inst}:{mp}", "warn", f"disk free {v:.3f} < 0.10 on {inst} {mp}", Q_PVE_DISK)
+
+    names, ready, req, alloc = k3s_nodes(base)
+    if not names:
+        add("k3s-nodata", "crit", "no k3s node samples returned", Q_K3S_READY)
+    nodes = []
+    for n in names:
+        commit = {}
+        for r in ("cpu", "memory"):
+            a = alloc[r].get(n)
+            if not a:
+                add(f"k3s-alloc-nodata:{n}:{r}", "warn", f"no allocatable {r} sample for k3s node {n}",
+                    Q_ALLOC.format(r=r))
+            commit[r] = req[r].get(n, 0.0) / a if a else None
+            if commit[r] is not None and commit[r] > 0.90:
+                add(f"k3s-commit:{n}:{r}", "warn", f"{r} requests {commit[r]:.3f} of allocatable on {n}",
+                    f"{Q_REQ.format(r=r)} / sum by (node) ({Q_ALLOC.format(r=r)})")
+        nodes.append({"node": n, "ready": ready.get(n) == 1, "cpuCommit": r3(commit["cpu"]),
+                      "memoryCommit": r3(commit["memory"])})
+        if n not in ready:
+            add(f"k3s-node-nodata:{n}", "crit", f"no Ready sample for k3s node {n}", Q_K3S_READY)
+        if ready.get(n) == 0:
+            add(f"k3s-node:{n}", "crit", f"k3s node {n} is not Ready", Q_K3S_READY)
+    for m, _ in query(base, Q_PODS):
+        add(f"k3s-pod:{m.get('namespace')}/{m.get('pod')}", "warn",
+            f"pod phase {m.get('phase')}", Q_PODS)
+    for m, _ in query(base, Q_WAIT):
+        add(f"k3s-wait:{m.get('namespace')}/{m.get('pod')}", "crit",
+            f"container {m.get('container')} waiting: {m.get('reason')}", Q_WAIT)
+    for m, _ in query(base, Q_PVC):
+        add(f"k3s-pvc:{m.get('namespace')}/{m.get('persistentvolumeclaim')}", "warn",
+            f"PVC phase {m.get('phase')}", Q_PVC)
+    argo = query(base, Q_ARGO)
+    bad = 0
+    for m, _ in argo:
+        if m.get("health_status") != "Healthy" or m.get("sync_status") != "Synced":
+            bad += 1
+            add(f"argo:{m.get('name')}", "warn",
+                f"argo app {m.get('name')} health={m.get('health_status')} sync={m.get('sync_status')}", Q_ARGO)
+    for m, _ in query(base, Q_TARGETS):
+        if m.get("job") == "proxmox-nodes":
+            continue
+        add(f"target:{m.get('job')}:{m.get('instance')}", "warn", "scrape target down", Q_TARGETS)
+    for m, _ in query(base, Q_ALERTS):
+        where = m.get("namespace") or m.get("instance") or m.get("job") or "-"
+        name = m.get("alertname", "?")
+        sev = "crit" if m.get("severity") == "critical" else "warn"
+        add(f"alert:{name}:{where}", sev, f"alert {name} firing ({m.get('severity', 'none')}) on {where}",
+            f'ALERTS{{alertstate="firing",alertname="{name}"}}')
+
+    return {"ok": not findings,
+            "checkedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pve": pve, "pveUp": sum(1 for x in pve if x["up"]), "pveTotal": len(pve),
+            "k3s": {"nodes": nodes, "ready": sum(1 for x in nodes if x["ready"]), "total": len(nodes),
+                    "argoApps": len(argo), "argoUnhealthy": bad},
+            "findings": findings}
+
+
+# Failed-run causes, first match wins, matched against "<errorCode> <error>"
+# lower-cased. Route: count = benign, counted and never escalated; nagatha =
+# infra, fixed or opened as her infra task the same hour; bishop = harness or
+# skill, a board task to Bishop with the sample runs. A run that matches none
+# is `unclassified` and goes to Bishop too, so a new failure shape always
+# reaches someone; the rule it needs is then added here by PR.
+RUN_RULES = [
+    # A queued continuation whose task was cancelled or reassigned before it
+    # started: the 2026-10-04 18:10Z sweep (185 runs) was this.
+    ("continuation-task-changed", "count",
+     r"continuation_task_|continuation.{0,40}(cancel|reassign|ownership)|task_(was_)?(cancelled|reassigned)"),
+    ("stream-drop", "nagatha",
+     r"bifrost|proxy|upstream|stream.{0,20}(drop|clos|reset|end|error|interrupt|terminat|abort)"
+     r"|econnreset|socket hang up|premature close|bad gateway|gateway timeout"),
+    ("ssh-mount", "nagatha", r"\bssh\b|publickey|mount|stale file handle|/mnt/"),
+    ("paperclip-server", "nagatha",
+     r"paperclip.{0,40}(server|api|unavailable|\b5\d\d\b)|database|postgres|econnrefused"
+     r"|internal server error"),
+    ("process-lost", "nagatha",
+     r"process.?lost|lost.{0,10}process|orphan|sigkill|killed|exit code 137|\boom\b|out of memory"
+     r"|enospc|no space left"),
+    ("harness", "bishop",
+     r"adapter|harness|claude|codex|\bpi\b|skill|max.?turns|context|rate.?limit|\b429\b"
+     r"|usage limit|setup_failed|exit(ed)? (with )?code"),
+]
+RUN_RULES = [(c, r, re.compile(x)) for c, r, x in RUN_RULES]
+FAILED = ("failed", "timed_out")
+# Paperclip clamps a heartbeat-runs page to 1000 (routes/agents.js).
+BOARD_PAGE_CAP = 1000
+ROUTE_WORD = {"count": "counted", "nagatha": "mine", "bishop": "to Bishop"}
+# The runs feed (SOF-12351): one comment per window, this header on its first
+# line and the `runs` JSON in a ```json block.
+FEED_HEAD = "infra-health runs feed v1"
+FEED_SCAN = 50  # newest comments read when looking for the newest feed comment
+FEED_MAX_AGE_MIN = 120
+FEED_MIN_GAP_MIN = 55
+
+
+def board_get(board, token, path, body=None, run_id=""):
+    url = board.rstrip("/") + "/api" + path
+    headers = {"Authorization": f"Bearer {token}"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+        if run_id:
+            headers["X-Paperclip-Run-Id"] = run_id
+    method = "GET" if body is None else "POST"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = r.read()
+    except urllib.error.HTTPError as e:
+        why = ""
+        try:
+            why = str((json.loads(e.read()) or {}).get("error", ""))[:200]
+        except (ValueError, AttributeError, OSError):
+            pass
+        raise HarnessError(f"board refused {method} /api{path.split('?')[0]} ({e.code}){': ' + why if why else ''}")
+    except (urllib.error.URLError, OSError) as e:
+        raise HarnessError(f"board unreachable at {board}: {e}")
+    try:
+        return json.loads(body)
+    except ValueError:
+        raise HarnessError(f"board returned unparseable body for {method} /api{path.split('?')[0]}")
+
+
+def ts(x):
+    try:
+        return datetime.fromisoformat(str(x).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def utc(dt):
+    """An aware time as its UTC instant with a literal Z (never relabelled)."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def utc_now():
+    # INFRA_HEALTH_NOW lets a test own the clock the script reads.
+    pinned = os.environ.get("INFRA_HEALTH_NOW")
+    t = ts(pinned) if pinned else None
+    return t if t is not None and t.tzinfo is not None else datetime.now(timezone.utc)
+
+
+def classify(run):
+    text = f"{run.get('errorCode') or ''} {run.get('error') or ''}".lower()
+    for cause, route, rx in RUN_RULES:
+        if rx.search(text):
+            return cause, route
+    if run.get("status") == "timed_out":
+        return "run-timeout", "bishop"
+    return "unclassified", "bishop"
+
+
+def runs(board, token, co, since, limit, now):
+    all_runs = board_get(board, token, f"/companies/{co}/heartbeat-runs?limit={limit}")
+    agents = board_get(board, token, f"/companies/{co}/agents")
+    if not isinstance(all_runs, list) or not isinstance(agents, list):
+        raise HarnessError("board returned a non-list for heartbeat-runs or agents")
+    names = {a.get("id"): a.get("name") for a in agents if isinstance(a, dict)}
+    causes = {}
+    failed = 0
+    for r in all_runs:
+        if not isinstance(r, dict):
+            continue
+        at = ts(r.get("finishedAt") or r.get("createdAt"))
+        if at is not None and at.tzinfo is None:
+            at = None
+        if r.get("status") not in FAILED or at is None or not (since < at <= now):
+            continue
+        failed += 1
+        cause, route = classify(r)
+        c = causes.setdefault(cause, {"cause": cause, "route": route, "count": 0, "agents": {},
+                                      "errors": [], "samples": [], "first": None, "last": None})
+        c["count"] += 1
+        who = names.get(r.get("agentId")) or str(r.get("agentId", "?"))[:8]
+        c["agents"][who] = c["agents"].get(who, 0) + 1
+        err = ": ".join(x for x in (r.get("errorCode"), r.get("error")) if x) or r.get("status")
+        err = str(err).split("\n")[0][:160]
+        if err not in c["errors"] and len(c["errors"]) < 3:
+            c["errors"].append(err)
+        if len(c["samples"]) < 5 and r.get("id"):
+            c["samples"].append(r["id"])
+        iso = utc(at)
+        c["first"] = min(c["first"] or iso, iso)
+        c["last"] = max(c["last"] or iso, iso)
+    out = sorted(causes.values(), key=lambda c: (-c["count"], c["cause"]))
+    for c in out:
+        c["agents"] = dict(sorted(c["agents"].items(), key=lambda kv: (-kv[1], kv[0])))
+    checked = utc(now)
+    since_s = utc(since)
+    # The board orders the page by createdAt while the window is on finishedAt,
+    # so even a full page that reaches back past --since can omit a long run
+    # that finished inside the window: every full page may be truncated.
+    truncated = len(all_runs) >= limit
+    parts = [f"{c['cause']} {c['count']} {ROUTE_WORD[c['route']]} ("
+             + ", ".join(f"{k} {v}" for k, v in c["agents"].items()) + ")" for c in out]
+    line = f"{checked} runs since {since_s}: {failed} failed" + ("; " + "; ".join(parts) if parts else "")
+    if truncated:
+        line += f" (page of {limit} full: may be truncated, older runs not read)"
+    return {"checkedAt": checked, "since": since_s, "scanned": len(all_runs), "truncated": truncated,
+            "failed": failed, "causes": out, "line": line}
+
+
+def feed_body(out):
+    return f"{FEED_HEAD} · {out['line']}\n\n```json\n{json.dumps(out)}\n```\n"
+
+
+def newest_feed(board, token, issue):
+    """The newest well-formed feed comment on `issue`: (comment, runs JSON), or None."""
+    q = urllib.parse.quote(issue, safe="")
+    comments = board_get(board, token, f"/issues/{q}/comments?limit={FEED_SCAN}")
+    if not isinstance(comments, list):
+        raise HarnessError(f"board returned a non-list for GET /api/issues/{issue}/comments")
+    best = None
+    for c in comments:
+        if not isinstance(c, dict) or c.get("deletedAt"):
+            continue
+        text = str(c.get("body") or "")
+        if not text.startswith(FEED_HEAD):
+            continue
+        start, end = text.find("```json\n"), text.rfind("\n```")
+        if start < 0 or end <= start:
+            continue
+        try:
+            data = json.loads(text[start + 8:end])
+        except ValueError:
+            continue
+        at = ts(data.get("checkedAt")) if isinstance(data, dict) else None
+        if at is None or at.tzinfo is None or not isinstance(data.get("line"), str):
+            continue
+        if best is None or at > best[2]:
+            best = (c, data, at)
+    return best
+
+
+def read_feed(board, token, issue, now, max_age_min):
+    hit = newest_feed(board, token, issue)
+    if hit is None:
+        raise HarnessError(f"runs feed {issue}: no `{FEED_HEAD}` comment in its newest {FEED_SCAN}")
+    c, data, at = hit
+    age = (now - at).total_seconds() / 60
+    if age > max_age_min:
+        raise HarnessError(f"runs feed {issue}: newest feed comment is {age:.0f} min old "
+                           f"(checkedAt {utc(at)}), older than {max_age_min} min")
+    if age < -5:
+        raise HarnessError(f"runs feed {issue}: newest feed comment is from the future (checkedAt {utc(at)})")
+    data["source"] = {"issue": issue, "commentId": c.get("id"), "postedAt": c.get("createdAt"),
+                      "ageMin": round(age)}
+    return data
+
+
+def publish(board, token, co, issue, since, limit, now, min_gap_min, run_id):
+    hit = newest_feed(board, token, issue)
+    last = hit[2] if hit else None
+    if last is not None and (now - last).total_seconds() / 60 < min_gap_min:
+        return {"published": False, "issue": issue,
+                "reason": f"newest feed comment checkedAt {utc(last)} is under {min_gap_min} min old"}
+    if since is None:
+        since = last if last is not None and last < now else now - timedelta(hours=1)
+    out = runs(board, token, co, since, limit, now)
+    posted = board_get(board, token, f"/issues/{urllib.parse.quote(issue, safe='')}/comments",
+                       body={"body": feed_body(out)}, run_id=run_id)
+    return {"published": True, "issue": issue,
+            "commentId": posted.get("id") if isinstance(posted, dict) else None, "line": out["line"]}
+
+
+def fit(base, cpu, memory, replicas):
+    names, ready, req, alloc = k3s_nodes(base)
+    nodes = []
+    for n in names:
+        ac = alloc["cpu"].get(n, 0.0) * 1000
+        am = alloc["memory"].get(n, 0.0) / 1048576
+        fc = ac - req["cpu"].get(n, 0.0) * 1000
+        fm = am - req["memory"].get(n, 0.0) / 1048576
+        usable_cpu = fc - 0.10 * ac
+        usable_mem = fm - 0.10 * am
+        if ready.get(n) != 1 or usable_cpu < cpu or usable_mem < memory:
+            slots = 0
+        else:
+            slots = min(math.floor(usable_cpu / cpu) if cpu > 0 else 10**6,
+                        math.floor(usable_mem / memory) if memory > 0 else 10**6)
+        nodes.append({"node": n, "freeCpu": round(fc), "freeMemory": round(fm), "fits": slots >= 1,
+                      "slots": slots})
+    nodes.sort(key=lambda x: x["freeMemory"], reverse=True)
+    total = sum(x["slots"] for x in nodes)
+    return {"request": {"cpu": cpu, "memory": memory, "replicas": replicas},
+            "fits": total >= replicas, "slots": total, "nodes": nodes}
+
+
+def main(argv):
+    p = Usage(prog="infra-health")
+    p.add_argument("mode", nargs="?", default="check", choices=["check", "fit", "runs"])
+    p.add_argument("--base-url")
+    p.add_argument("--board-url")
+    p.add_argument("--since")
+    p.add_argument("--limit", type=int, default=1000)
+    p.add_argument("--feed")
+    p.add_argument("--publish")
+    p.add_argument("--max-age-min", type=int, default=FEED_MAX_AGE_MIN)
+    p.add_argument("--min-gap-min", type=int, default=FEED_MIN_GAP_MIN)
+    p.add_argument("--cpu", type=float)
+    p.add_argument("--memory", type=float)
+    p.add_argument("--replicas", type=int, default=1)
+    a = p.parse_args(argv)
+    if a.mode == "fit":
+        if a.cpu is None or a.memory is None or a.cpu < 0 or a.memory < 0 or a.replicas < 1:
+            p.error("fit needs --cpu >= 0, --memory >= 0 and --replicas >= 1")
+    elif a.cpu is not None or a.memory is not None:
+        p.error("--cpu/--memory only apply to fit")
+    if a.mode != "runs" and (a.board_url or a.since or a.feed or a.publish):
+        p.error("--board-url/--since/--feed/--publish only apply to runs")
+    if a.feed and (a.publish or a.since):
+        p.error("--feed reads the feed's own window: no --publish or --since with it")
+    if a.max_age_min < 1 or a.min_gap_min < 0:
+        p.error("--max-age-min must be >= 1 and --min-gap-min >= 0")
+    base = a.base_url or os.environ.get("PROMETHEUS_URL") or DEFAULT_BASE
+    if a.mode == "runs":
+        board = a.board_url or os.environ.get("PAPERCLIP_API_URL")
+        token, co = os.environ.get("PAPERCLIP_API_KEY"), os.environ.get("PAPERCLIP_COMPANY_ID")
+        if not board or not token or (not co and not a.feed):
+            p.error("runs needs PAPERCLIP_API_URL (or --board-url), PAPERCLIP_API_KEY and PAPERCLIP_COMPANY_ID")
+        now = utc_now()
+        since = None  # --publish: from the newest feed comment; --feed: no window
+        if a.since:
+            since = ts(a.since)
+            if since is None or since.tzinfo is None:
+                p.error("runs needs --since as an ISO 8601 time with a zone (e.g. 2026-10-04T18:00:00Z)")
+        elif not (a.publish or a.feed):
+            since = now - timedelta(hours=1)
+        # The board clamps a page to BOARD_PAGE_CAP; asking for more would
+        # read a clamped page and hide that it is full.
+        if not 1 <= a.limit <= BOARD_PAGE_CAP:
+            p.error(f"runs needs 1 <= --limit <= {BOARD_PAGE_CAP} (the board's page cap)")
+    try:
+        if a.mode == "runs" and a.feed:
+            out = read_feed(board, token, a.feed, now, a.max_age_min)
+        elif a.mode == "runs" and a.publish:
+            out = publish(board, token, co, a.publish, since, a.limit, now, a.min_gap_min,
+                          os.environ.get("PAPERCLIP_RUN_ID", ""))
+        elif a.mode == "runs":
+            out = runs(board, token, co, since, a.limit, now)
+        else:
+            out = check(base) if a.mode == "check" else fit(base, a.cpu, a.memory, a.replicas)
+    except HarnessError as e:
+        sys.stderr.write(f"infra-health: {e}\n")
+        return 1
+    sys.stdout.write(json.dumps(out) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,251 @@
+{
+	"id": "issue-type",
+	"version": 1,
+	"type": "choice",
+	"about": "D6: the triage label for an issue, from the lane's allowlist (duplicate excluded: it needs other issues)",
+	"ask": "The state is a software issue (`title`, `body`). Which one label fits it best?",
+	"confident": 0.7,
+	"criteria": {
+		"bug": "Something that exists is broken or behaves wrongly: a defect, a crash, a wrong result, a failing check.",
+		"enhancement": "New capability, a change in behaviour, hardening, or a refactor asked for on purpose.",
+		"documentation": "Only docs, comments, READMEs, SOPs, or handover text need to change.",
+		"question": "Asks something, or needs a decision or information before any work.",
+		"invalid": "Not actionable here: spam, wrong repository, empty, or nonsense."
+	},
+	"policy": {
+		"bug": {
+			"verdict": "BUG"
+		},
+		"enhancement": {
+			"verdict": "ENHANCEMENT"
+		},
+		"documentation": {
+			"verdict": "DOCUMENTATION"
+		},
+		"question": {
+			"verdict": "QUESTION"
+		},
+		"invalid": {
+			"verdict": "INVALID"
+		}
+	},
+	"unsure": {
+		"verdict": "UNSURE"
+	},
+	"no_signal": {
+		"verdict": "NO_SIGNAL",
+		"why": "no Jev signal"
+	},
+	"examples": [
+		{
+			"fields": {
+				"title": "the config loader returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/config/load.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the webhook receiver returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/hooks/receiver.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the status page returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/status/server.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the retry scheduler returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/reconcile/retry.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the log redactor returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/log/redact.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the result publisher returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/results/publish.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the sweep timer returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/reconcile/sweep.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the job ledger returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/db/jobs.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the review poster returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/review/post.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "the metrics endpoint returns the wrong result when its input is empty",
+				"body": "## Defect\n\n`src/status/metrics.ts` treats an empty input as a success and returns a stale value from the previous call. Seen in the test log after a run with no repositories configured.\n\n## Expected\n\nAn empty input yields an explicit \"nothing to do\" result.\n\n## Done means\n\nA test with an empty input fails today and passes after the fix."
+			},
+			"expect": "bug"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the retry scheduler",
+				"body": "## Ask\n\n`src/reconcile/retry.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the log redactor",
+				"body": "## Ask\n\n`src/log/redact.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the result publisher",
+				"body": "## Ask\n\n`src/results/publish.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the sweep timer",
+				"body": "## Ask\n\n`src/reconcile/sweep.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the job ledger",
+				"body": "## Ask\n\n`src/db/jobs.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the review poster",
+				"body": "## Ask\n\n`src/review/post.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the metrics endpoint",
+				"body": "## Ask\n\n`src/status/metrics.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the packet loader",
+				"body": "## Ask\n\n`src/packets/loader.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the runner transport",
+				"body": "## Ask\n\n`src/runner/transport.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Add a bounded timeout to the branch namer",
+				"body": "## Ask\n\n`src/results/branch.ts` waits without a limit on its upstream call. Add a configurable timeout (default 30 s) and report a timeout as a distinct error class.\n\n## Done means\n\nA test with a stalled upstream sees the timeout error within the limit."
+			},
+			"expect": "enhancement"
+		},
+		{
+			"fields": {
+				"title": "Document how the result publisher is configured",
+				"body": "The README does not say which config keys the result publisher reads or what their defaults are. Add a short section listing each key, its default, and one example. No code changes."
+			},
+			"expect": "documentation"
+		},
+		{
+			"fields": {
+				"title": "Document how the sweep timer is configured",
+				"body": "The README does not say which config keys the sweep timer reads or what their defaults are. Add a short section listing each key, its default, and one example. No code changes."
+			},
+			"expect": "documentation"
+		},
+		{
+			"fields": {
+				"title": "Document how the job ledger is configured",
+				"body": "The README does not say which config keys the job ledger reads or what their defaults are. Add a short section listing each key, its default, and one example. No code changes."
+			},
+			"expect": "documentation"
+		},
+		{
+			"fields": {
+				"title": "Document how the review poster is configured",
+				"body": "The README does not say which config keys the review poster reads or what their defaults are. Add a short section listing each key, its default, and one example. No code changes."
+			},
+			"expect": "documentation"
+		},
+		{
+			"fields": {
+				"title": "Should the job ledger run before or after the sweep?",
+				"body": "Before anyone changes the ordering: is there a reason the job ledger runs after the sweep today? If the order matters, which invariant does it protect? Looking for a decision, not code."
+			},
+			"expect": "question"
+		},
+		{
+			"fields": {
+				"title": "Should the review poster run before or after the sweep?",
+				"body": "Before anyone changes the ordering: is there a reason the review poster runs after the sweep today? If the order matters, which invariant does it protect? Looking for a decision, not code."
+			},
+			"expect": "question"
+		},
+		{
+			"fields": {
+				"title": "Should the metrics endpoint run before or after the sweep?",
+				"body": "Before anyone changes the ordering: is there a reason the metrics endpoint runs after the sweep today? If the order matters, which invariant does it protect? Looking for a decision, not code."
+			},
+			"expect": "question"
+		},
+		{
+			"fields": {
+				"title": "asdf",
+				"body": "test test test"
+			},
+			"expect": "invalid"
+		},
+		{
+			"fields": {
+				"title": "Buy cheap followers now",
+				"body": "Visit our site for the best deals on followers and likes."
+			},
+			"expect": "invalid"
+		},
+		{
+			"fields": {
+				"title": "My printer will not connect to wifi",
+				"body": "Nothing to do with this project, but maybe someone here knows?"
+			},
+			"expect": "invalid"
+		}
+	]
+}

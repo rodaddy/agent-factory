@@ -1,0 +1,19 @@
+-- sf#719 §6/§8: `build_bump_candidates.requeues` — how many times a marker
+-- environment has re-queued this candidate from `failed` back to `pending`.
+--
+-- The requeue itself is correct and stays UNBOUNDED: it is how a marker placed
+-- on a build that failed converges once the fault is removed. What was missing
+-- is evidence that it is happening. A build failing for a permanent reason was
+-- requeued every pass forever, creating one Kaniko Job per cycle, while no pair
+-- row was ever created — so the stuck-pair alert had nothing to match and
+-- `/status.json` read exactly like an environment nobody had put a marker on.
+--
+-- NOT NULL DEFAULT 0, unlike the nullable readiness columns: zero is the honest
+-- value for every pre-existing row, because nothing had ever been counted under
+-- code that did not count. There is no "unknown" here to preserve.
+--
+-- Plain SQL with no `$$` dollar quoting — this file reaches Postgres through
+-- Bun.sql `unsafe()` in scripts/migrate.ts, which reads `$$` as a parameter
+-- marker (sf#457, ledger L-061). The statement is IF NOT EXISTS, so a re-run is
+-- a no-op.
+ALTER TABLE "build_bump_candidates" ADD COLUMN IF NOT EXISTS "requeues" integer NOT NULL DEFAULT 0;

@@ -1,0 +1,42 @@
+async function resolveSpawnTarget(command, args, cwd, env, options = {}) {
+    const remote = options.remoteExecution ?? null;
+    if (remote) {
+        const sshResolved = await resolveCommandPath("ssh", process.cwd(), env);
+        if (!sshResolved) {
+            throw new Error('Command not found in PATH: "ssh"');
+        }
+        const spawnTarget = await buildSshSpawnTarget({
+            spec: remote,
+            command,
+            args,
+            env: Object.fromEntries(Object.entries(options.remoteEnv ?? {}).filter((entry) => typeof entry[1] === "string")),
+        });
+        return {
+            command: sshResolved,
+            args: spawnTarget.args,
+            cwd: process.cwd(),
+            cleanup: spawnTarget.cleanup,
+        };
+    }
+    const resolved = await resolveCommandPath(command, cwd, env);
+        })
+            .then((target) => {
+            const childEnv = { ...mergedEnv, ...target.env };
+            for (const [key, value] of Object.entries(childEnv)) {
+                if (value === undefined)
+                    delete childEnv[key];
+            }
+            const child = spawn(target.command, target.args, {
+                cwd: target.cwd ?? opts.cwd,
+                env: childEnv,
+                detached: process.platform !== "win32",
+                shell: false,
+                stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+            });
+            const startedAt = new Date().toISOString();
+            const processGroupId = resolveProcessGroupId(child);
+            const spawnPersistPromise = typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
+                ? opts
+                    .onSpawn({ pid: child.pid, processGroupId, startedAt })
+                    .catch((err) => {
+                    onLogError(err, runId, "failed to record child process metadata");

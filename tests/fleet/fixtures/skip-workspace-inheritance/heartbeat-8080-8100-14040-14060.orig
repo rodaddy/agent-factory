@@ -1,0 +1,42 @@
+            ? await db
+                .select({
+                projectId: issues.projectId,
+                projectWorkspaceId: issues.projectWorkspaceId,
+            })
+                .from(issues)
+                .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+                .then((rows) => rows[0] ?? null)
+            : null;
+        const issueProjectId = issueProjectRef?.projectId ?? null;
+        const preferredProjectWorkspaceId = issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
+        const resolvedProjectId = issueProjectId ?? contextProjectId;
+        const useProjectWorkspace = opts?.useProjectWorkspace !== false;
+        const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
+        const unorderedProjectWorkspaceRows = workspaceProjectId
+            ? await db
+                .select()
+                .from(projectWorkspaces)
+                .where(and(eq(projectWorkspaces.companyId, agent.companyId), eq(projectWorkspaces.projectId, workspaceProjectId)))
+                .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+            : [];
+            const defaultIsolatedWorkspacesEnabled = isolatedWorkspacesEnabled &&
+                experimentalInstanceSettings.enableIsolatedWorkspacesByDefault;
+            const parsedIssueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings);
+            const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
+                ? parsedIssueExecutionWorkspaceSettings
+                : null;
+            const environmentExecutionWorkspaceSettings = selectEnvironmentExecutionWorkspaceSettings(parsedIssueExecutionWorkspaceSettings, isolatedWorkspacesEnabled);
+            const contextProjectId = readNonEmptyString(context.projectId);
+            const executionProjectId = issueContext?.projectId ?? contextProjectId;
+            const projectContext = executionProjectId
+                ? await db
+                    .select({
+                    id: projects.id,
+                    executionWorkspacePolicy: projects.executionWorkspacePolicy,
+                    env: projects.env,
+                    updatedAt: projects.updatedAt,
+                })
+                    .from(projects)
+                    .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
+                    .then((rows) => rows[0] ?? null)
+                : null;

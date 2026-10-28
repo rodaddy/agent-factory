@@ -1,0 +1,11 @@
+-- sf#708: `job_attempts.level` — the log level in force for an attempt. The
+-- dispatch path decides it where the attempt count is known (first attempt
+-- info, a respawn debug: dispatch-time escalation, D15) and records it here.
+--
+-- NOT NULL DEFAULT 'info': every pre-existing attempt ran under the
+-- process-global level, which was info, so info is the honest backfill.
+--
+-- Plain SQL with no `$$` dollar quoting — this file reaches Postgres through
+-- Bun.sql `unsafe()` in scripts/migrate.ts (sf#457, ledger L-061). The
+-- statement is IF NOT EXISTS, so a re-run is a no-op.
+ALTER TABLE "job_attempts" ADD COLUMN IF NOT EXISTS "level" text DEFAULT 'info' NOT NULL;

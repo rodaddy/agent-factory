@@ -1,0 +1,121 @@
+import { accountingMetadata } from "./fleet-accounting.js";
+import { admit, classifyRunEnd, holdOnce, settle } from "./operation-admission.js";
+import { mapOperation } from "./operation-identity.js";
+    const budgetHooks = {
+        cancelWorkForScope: cancelBudgetScopeWork,
+    };
+    const budgets = budgetService(db, budgetHooks);
+    const recovery = recoveryService(db, {
+        enqueueWakeup,
+        liveRunExecutions,
+    async function finalizeAgentStatus(agentId, outcome, failureReason, options) {
+        const existing = await getAgent(agentId);
+        if (!existing)
+            return;
+        if (existing.status === "paused" || existing.status === "terminated") {
+            return;
+        }
+        const isFirstHeartbeat = options?.wasFirstHeartbeat ?? !existing.lastHeartbeatAt;
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const nextStatus = runningCount > 0
+            ? "running"
+            : outcome === "succeeded" ||
+                outcome === "interrupted" ||
+                outcome === "cancelled" ||
+                (outcome === "failed" && options?.keepIdleOnFailure)
+                ? "idle"
+                : "error";
+        const updated = await db
+            .update(agents)
+            .set({
+            status: nextStatus,
+            // Persist a human-readable reason on the agent record when it enters
+            // error so operators see it on the agent page without digging into run
+            // events; clear it whenever the agent leaves error.
+            errorReason: nextStatus === "error"
+                ? truncateAgentErrorReason(failureReason)
+                : null,
+            lastHeartbeatAt: new Date(),
+            updatedAt: new Date(),
+        })
+            .where(eq(agents.id, agentId))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        if (isFirstHeartbeat && updated) {
+            const tc = getTelemetryClient();
+            if (tc)
+                trackAgentFirstHeartbeat(tc, {
+                    agentRole: updated.role,
+                    agentId: updated.id,
+                });
+        }
+        if (updated) {
+            publishLiveEvent({
+                companyId: updated.companyId,
+                type: "agent.status",
+                payload: {
+                    agentId: updated.id,
+                    status: updated.status,
+                    lastHeartbeatAt: updated.lastHeartbeatAt
+                        ? new Date(updated.lastHeartbeatAt).toISOString()
+                        : null,
+                    outcome,
+                },
+            });
+        }
+    }
+    function mergeRunStopMetadataForAgent(agent, outcome, options) {
+            const dispatchResolvedInteractionContinuationWithAtomicGate = async (dispatch) => {
+                await controllerLease.assertOwned("dispatching");
+                // Recheck after workspace/credential preparation, immediately before the
+                // provider handoff. Never hold validation locks while adapter code runs.
+                await authorizeFailedChatRetryExecution();
+                if (!(await withChatControlRecoveryGate(run, "dispatch", async () => run, Boolean(runOptions.nativeLeaseOwner || runOptions.nativeRestartRecovery))))
+                    return { dispatched: false };
+                const operationAdmission = await admitOperationBeforeDispatch(run, context, runOptions, issueId, issueContext);
+                if (operationAdmission.held)
+                    return operationAdmission.held;
+                if (!issueId ||
+                    (!isResolvedInteractionContinuationWakeContext(context) &&
+                        run.scheduledRetryReason !== "native_safe_replacement")) {
+                    return { dispatched: true, resultPromise: dispatch(() => { }) };
+                }
+                await options.beforeResolvedInteractionContinuationDispatchCheck?.({
+                    runId: run.id,
+                    issueId,
+                });
+                await options.afterResolvedInteractionContinuationDispatchCheck?.({
+                    runId: run.id,
+                    issueId,
+                });
+                const gate = await runDispatch.dispatchResolvedInteractionIfCurrent({
+                    runId: run.id,
+                    companyId: run.companyId,
+                    expectedStatus: "running",
+                    // Synchronous handoff under the ownership lock; the gate commits
+                    // without awaiting the adapter's asynchronous bootstrap or finalizer.
+                    dispatch,
+                });
+                if (gate.dispatched)
+                    return gate;
+                if (gate.cancellation.outcome === "cancelled") {
+                    applyRunDispatchPostCommitEffects(gate.cancellation.postCommitEffects);
+                }
+                if (operationAdmission.reserved)
+                    await refuseOwnOperationReservation(operationAdmission.store, operationAdmission.reserved, run.id);
+                return { dispatched: false };
+            };
+                if (latestRun &&
+                    !nativeSessionResumeScheduled &&
+                    !nativeWorkspaceFinalizeScheduled &&
+                    !nativeOwnershipHeld)
+                    await settleOperationAdmissionAtRunEnd(latestRun);
+                // Warm retention is earned only by a fully successful turn. A failed,
+                // cancelled, or timed-out run stops the reusable sandbox so the next
+                // acquisition must revalidate and explicitly resume it.
+        reconcileTaskWatchdogs,
+        buildRunOutputSilence,
+        tickTimers: async (now = new Date()) => {
+            if ((await getSchedulingSuppression()).suppressed) {
+                return {
+                    checked: 0,

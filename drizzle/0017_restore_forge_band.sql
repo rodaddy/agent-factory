@@ -1,0 +1,22 @@
+-- sf#557: restore the factory `forge` band 9101-9150 as the Forge runner fleet.
+--
+-- Ruling (Rico, 2026-09-02): "There should be a fleet of those dispatched by the
+-- watcher as needed, like five to ten of them." The 9101-9150 band IS the
+-- Forgejo CI/CD runner fleet; a single runner container was never the design. This SUPERSEDES
+-- the retire reading of the 2026-08-28 ruling that shipped as sf#457 and
+-- `drizzle/0013_retire_forge_band.sql` — that file's "fully retired" assertion no
+-- longer describes the intended state and must not be read as current.
+-- Companion: rtech-infra#1391 (image, registration, band population).
+--
+-- THIS MIGRATION IS A DOCUMENTED NO-OP, deliberately. There is no CHECK
+-- constraint or enum on `runner_boxes.band` (see `drizzle/0002_runner_boxes.sql`
+-- and `src/db/schema.ts`), so nothing in the schema has to widen to admit
+-- `forge`. The rows themselves come back through the seed, not through DDL:
+-- `scripts/migrate.ts` runs `seedRunnerBoxes()` unconditionally after every
+-- migrate pass, upserting the whole stated inventory from `src/runner/bands.ts`,
+-- so restoring the band in that file is what re-creates the 50 rows.
+--
+-- The file exists anyway so the restore is a recorded, ordered schema event with
+-- the ruling attached, sitting after 0013 in `schema_migrations` where anyone
+-- reading the ledger sees the reversal rather than only the retirement.
+SELECT 1 AS forge_band_restored_by_seed;

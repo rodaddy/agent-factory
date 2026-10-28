@@ -1,0 +1,5 @@
+Paperclip adapter-pi-local 2026.916.1 installed dist/server/execute.js.
+Byte-for-byte snapshot captured by rtech-infra from the installed package.
+SHA256 bd57e6592b6fd029e8942ecc73024a5068a02079ab820c84268c14d1b9c76946
+Contains the deployed patches 01/07. No local edits to this fixture.
+Tests apply the proposed patch to a disposable copy, then execute real functions.

@@ -1,0 +1,12 @@
+# rodaddy-hook-probe-uat — workload.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rodaddy-hook-probe-uat
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: 10.0.20.58:3000/rodaddy/hook-probe:v0.2.2@sha256:854ebaa55b6f1e29324bf594ecf3e27a662bf6dd333829ee8c31b8aa73c76a27

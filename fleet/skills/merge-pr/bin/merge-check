@@ -1,0 +1,1011 @@
+#!/usr/bin/env python3
+"""merge-check (sf#1207): classify a reviewed PR under the merge rules.
+
+Usage: merge-check <owner/repo> <pr-number> <head-sha40> [--base-url URL]
+
+Env: FORGEJO_TOKEN (header only); FORGEJO_API_URL when --base-url is absent;
+  PAPERCLIP_API_URL, PAPERCLIP_API_KEY (header only), PAPERCLIP_COMPANY_ID;
+  TYPESAFE_API_KEY or JEV_API_KEY (header only; absent is no Jev signal),
+  JEV_API_URL (tests only); FLEET_STATE_DIR (default ~/.local/state/fleet);
+  FACTORYIGNORE_CLI (tests only; default the forge-pr plugin's factoryignore-cli.js).
+Output: JSON {class: "A"|"B"|"C"|"stale", mergeable: bool, checks, smythe, jev, reasons}.
+  stale: PR merged/closed, or the live head is not <head-sha40>.
+  C: a client/* repo, before anything else and with no Forge or board read: client
+     is off-limits until it moves from GitHub (sf#1375), except client/client-agent,
+     which has moved to Forge (Rico, 2026-10-06). Otherwise the review
+     lead's verdict for this head is fix-first or absent, or a
+     required status is not success. checks says which: "red" (failure/error)
+     or "pending" (missing or not finished). Required is factory/infra-static
+     for a repo enrolled `checks: static-only` in the factory's config/repos.yml
+     on main (SOF-2594), the OWN_CI contexts for a repo that runs its own CI
+     (sf#1400: rtech/k3s-deploy; rtech/rtech-whisper; rodaddy/mcp2cli), and factory/prepush,
+     factory/pr-review for every other repo. Also, on every repo and whoever opened it (sf#1413),
+     a PR body with no real `## Backout` or `## Test plan` section, or a big
+     change whose Backout carries no `rehearsed: <url>` line; and (sf#1482)
+     a body missing Development's PR-body set, named by its first missing item.
+     A PR whose base is not the repo's default branch (a stacked child, sf#1911)
+     is class C until its parent lands and it is retargeted; a PR with no base
+     on Forge is class C `base branch unknown`.
+  B: Rico's class (sf#1375, narrowed by sf#1493): label needs-rico, which only
+     Rico applies; or (sf#1690) a diff whose removed lines (the old side of an
+     edit included) cite Rico with a date or ruling, or `(Rico`: reason
+     `changes a Rico ruling: <file>:<old line>: <text>`. Binary changes also need Rico. Undoing a ruling stays with Rico
+     (company-conduct, "Rico only"). Added lines citing Rico are fine. A diff
+     that cannot be read is class C `could not read the diff for the ruling check`.
+  checks: "green"/"red"/"pending" over the factory/* statuses; "repo-ci" when
+     the head has no factory/* status and every status it has is success (the
+     repo's own CI meets the requirement; a failing or pending one is "red" or
+     "pending", class C); "none" when the head has no status at all: class C,
+     reason `smythe review: ...`, until Smythe decides.
+  A: everything else; the only class with mergeable true.
+  smythe: null, or {decision: approve|kickback|pending, reason, override}.
+  jev: Jev merge-go's probability for this head, or null when not asked.
+
+Smythe decides (Rico, 2026-10-06). A verdict line counts from Smythe or the Review
+Lead he dispatched (SOF-8387, below), the latest authorized one at this head
+winning. A head with no status,
+a SMYTHE_REPOS repo, or any Smythe decision line waits on Smythe, Head of
+Review: class C `smythe review: <why>` until his newest line on the review issue,
+in a comment under the `## Review of ... at <sha7>` heading for this head, says `smythe: approve` (class A, `smythe approved`) or `smythe:
+kickback: <why>` (class C, `kickback: <why>`, back to the author). After the
+kickback, a Forge PR comment whose first line starts `just do it`, posted at or
+after it by the PR's author or rodaddy, is class A `override by <login>`; any
+other login is ignored. needs-rico (class B) is unchanged.
+
+Otherwise a lead's approve asks Jev merge-go (fleet/skills/merge-pr/merge-go.json):
+GO (p >= 0.60, confident) is class A `... jev merge-go <p>`; no, unsure or no
+signal is class C `smythe review: jev merge-go <p or no signal>`, Smythe's as
+above. Every override is appended once (repo, number, head) to
+$FLEET_STATE_DIR/merge-go-precedents.jsonl; Jev's state carries the repo's ten
+newest as `precedents`, and bin/precedents-harvest prints them as examples.
+
+The verdict is read from the BOARD, never from Forge: the latest verdict comment
+on the issue `Review <owner/repo>#<n> @ <sha7>` whose description names
+<head-sha40>, written by an authorized author. The board stamps the author, so a
+comment by anyone else, on either side, cannot supply or override it. The
+authorized authors (SOF-8387):
+  Smythe, Head of Review: always, as before (legacy and countersigned reviews).
+  The Review Lead Smythe dispatched for THIS review issue: Adams or Czajka.
+    A dispatch is Smythe's own act on that issue (review-dispatch step 2):
+    his comment `Dispatched to <lead> (<k> open) per review-dispatch`, or his
+    assignment of the issue to the lead in the board's activity log (actor
+    stamp agent Smythe). The lead's verdict counts only when posted after that
+    dispatch and before Smythe's next one. A dispatch naming anyone else (an
+    assignment to a non-lead included), a dispatch comment naming two leads,
+    or two dispatches at one instant naming different agents authorize nobody
+    and end the earlier window; a lead name held by no agent or by two
+    authorizes nobody. A dispatch line, or an assignment, by anyone but Smythe
+    is ignored.
+The latest authorized verdict wins. A dispatched lead's `escalate: <why>` line
+(or a legacy `council call: <why>` from that lead, read the same) in its window hands the decision to Smythe: class C `smythe review: <why>` until
+Smythe answers after the latest such line, and then only his answers after it
+count: his own verdict, or exactly `smythe: approve` (as approve) or
+`smythe: kickback: <why>` (class C `kickback: <why>`). A `smythe:` line with no
+escalate before it decides no verdict; under this head's review heading it is
+still Smythe's decision above. Smythe's own `escalate: <why>`, or his legacy
+`council call: <why>`, is an escalate too: held for his answer after it, as above.
+
+No lead verdict (sf#1730; Rico, 2026-10-07). When pair tasks `Review
+<owner/repo>#<n> @ <sha7> (<Name>)` exist for the head, pair_verdict decides in
+place of a lead: the newest verdict from each family (CLAUDE_REVIEWERS,
+GPT_REVIEWERS), both approve. Smythe's verdict on the head, newer than the
+pair's, still wins; a legacy parent with no pair tasks drains as above.
+A pair task counts when the forge-pr plugin filed it (originKind) or Smythe
+did (the board's createdByAgentId; Rico, 2026-10-08, L-173: no leads, Smythe
+files one Anthropic + one GPT reviewer per slice).
+Each reviewer proves the PR body's `Blast radius:` line with `blast radius:
+confirmed` or `blast radius: wrong: <why>` in the verdict comment (R1, L-166):
+`wrong` is fix-first, and a pair approve with both confirmed is class A with no
+Jev call. A pair approve missing either line still asks Jev merge-go.
+
+Scripted non-code approve (sf#1730 US-002): with no verdict and nothing held on
+the board for the head, merge-check runs factoryignore-cli for that exact head.
+Only its exit 0 with `nonCode: true` and no refused path is an approve, class A
+`scripted: non-code`, after every other gate (PR body, required statuses green,
+needs-rico, Smythe). The Forge `verdict: approve (scripted: non-code)` comment is
+never read: any CLI error, refusal or moved head leaves the old answer.
+"""
+import base64
+import codecs
+import json
+from datetime import datetime, timezone
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+
+REQUIRED = ["factory/prepush", "factory/pr-review"]
+# A `checks: static-only` repo goes through the infra-static lane only
+# (src/hooks/infra-static.ts, sf#827), which posts this one context.
+REQUIRED_STATIC = ["factory/infra-static"]
+# The lane is read from the enrolment on the factory's main, never from the
+# statuses a head carries: anyone with write can post a status.
+# A repo that runs its own Forgejo Actions CI (sf#1400) requires these contexts
+# instead of the factory lanes'. The workflow is named `factory/<lane>`, so its
+# native status `<workflow> / <job> (<event>)` is a factory/* status; sop-gate
+# is k3s-deploy's branch-protection context, posted by the factory's lane.
+OWN_CI = {
+    "rtech/k3s-deploy": ["factory/k3s-ci / check (pull_request)", "sop-gate"],
+    # rtech-whisper's Tests workflow, job pr-quality (rtech-whisper PR 547; Rico, 2026-10-06).
+    "rtech/rtech-whisper": ["Tests / pr-quality (pull_request)"],
+    # mcp2cli's CI workflow, job check (SOF-11343). It has no factory/smoke or
+    # factory/prepush lane, and its factory/pr-review is advisory (config/repos.yml).
+    "rodaddy/mcp2cli": ["CI / check (pull_request)"],
+}
+ENROLMENT = ("rodaddy/software-factory", "config/repos.yml", "main")
+# Copied from jev-route SENIOR_RULES, the humanRequired entries only. These
+# paths, and SMYTHE_REPOS, mark a big change for the PR-body gate (sf#1413).
+# SMYTHE_REPOS also wait on Smythe's decision (Rico, 2026-10-06).
+HUMAN_RULES = [
+    ("secrets", re.compile(r"(auth|secret|credential|token)", re.I)),
+    ("deploy", re.compile(r"(^|/)(deploy|k8s|manifests)(/|$)|^\.forgejo/workflows/", re.I)),
+]
+SMYTHE_REPOS = re.compile(r"^(rtech/k3s-deploy|rtech/rtech-whisper.*)$")
+CLIENT = re.compile(r"^client/", re.I)
+# On Forge, so merged like any repo (Rico, 2026-10-06, sf#1375).
+KING_ON_FORGE = re.compile(r"client/client-agent", re.I)
+VERDICT = re.compile(r"^verdict:\s*(approve-with-fixes|approve|fix-first)\s*$", re.M)
+# The Head of Review (company-conduct, the crew table): his board verdict always
+# counts, and he alone dispatches a review and decides an escalation (Rico,
+# 2026-10-06).
+LEAD_NAME = "Smythe"
+# The Review Leads Smythe dispatches a review to (SOF-8387). A lead's verdict
+# counts only on a review issue Smythe dispatched to that lead, inside the window.
+REVIEW_LEADS = ["Adams", "Czajka"]
+# sf#1730 (Rico, 2026-10-07): no lead verdict. The reviewer pair's seats by
+# family, resolved by NAME; the newest verdict from each family on its pair task
+# `Review <repo>#<n> @ <sha7> (<Name>)`, both approve, is the go.
+# Adams and Czajka are reviewers of their family on a pair task (R5, L-166) and
+# stay in REVIEW_LEADS for the legacy lead path.
+CLAUDE_REVIEWERS = ["Kapoor", "Giraud", "Adams"]
+GPT_REVIEWERS = ["Colter", "Kong", "Czajka"]
+# R1 (L-166): the reviewer's proof of the PR body's `Blast radius:` line.
+# Key and value are case-insensitive (SOF-10778): a `Wrong:` objection is never
+# dropped as an old-skill missing line; an unknown value still is.
+BLAST = re.compile(r"^(?i:blast radius:[ \t]*(confirmed|wrong:[ \t]*(\S.*)))[ \t]*$", re.M)
+# Smythe's decision under this head's review heading (Rico,
+# 2026-10-06): main() reads it for a no-status head, a SMYTHE_REPOS repo, or
+# any such line.
+SMYTHE = re.compile(r"^smythe:\s*(approve|kickback:\s*(\S.*?))\s*$", re.M)
+# After Smythe's kickback, the author or rodaddy overrides it on the Forge PR.
+OVERRIDE = re.compile(r"^just do it\b", re.I)
+OVERRIDERS = ["rodaddy"]
+# Jev merge-go (sf#1375; Rico, 2026-10-06): the endpoint and model src/jev/client.ts
+# pins, and the classifier beside the skill. realpath: install.sh runs this through
+# a ~/.local/bin symlink (PR 1556 round 2).
+JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
+JEV_MODEL = "jev-1.13.0"
+MERGE_GO = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../merge-go.json")
+STATE_MAX = 1500
+# Overrides Jev learns from (Rico, 2026-10-06: "put it into some sort of memory file").
+PRECEDENTS = "merge-go-precedents.jsonl"
+# Smythe's dispatch line (review-dispatch step 2), at the start of a line. He
+# sometimes ends it with `;` or `,` and more text, so only the words are fixed.
+DISPATCH = re.compile(r"^Dispatched to (\S+) \([^)\n]*\) per review-dispatch\b", re.M)
+# A dispatched lead hands the decision to Smythe (the retired lead skill). After it
+# his own verdict, or his decision line (review-dispatch, "Deciding a `smythe
+# review:` PR"), decides. A legacy `council call: <why>` reads the same, from a
+# lead or from Smythe himself (Rico, 2026-10-06: Smythe's council call is an
+# escalate).
+ESCALATE = re.compile(r"^(?:escalate|council call):[ \t]*(\S.*?)\s*$", re.M)
+SMYTHE_SAYS = re.compile(r"^smythe:[ \t]*(approve|kickback:[ \t]*(\S.*?))\s*$", re.M)
+PAGE = 50
+# A pair task is one the forge-pr plugin filed (the host stamps its originKind)
+# or one Smythe created (the board's createdByAgentId, L-173). A former lead's
+# child review tasks share the `(<Name>)` title but are `manual` and not his.
+PAIR_ORIGIN = "plugin:rodaddy.forge-pr"
+
+# The non-code re-derivation beside the classifier (sf#1730 US-002).
+FACTORYIGNORE_CLI = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                 "../../../plugins/forge-pr/factoryignore-cli.js")
+# The PR-body gate (sf#1413; Rico, 2026-10-05: "Any PR that doesn't have a back
+# out plan and a test plan gets denied hard"): the two section headings, the
+# line that ends a section, the filler that counts as no section, and the
+# rehearsal link a big change's Backout must carry.
+BACKOUT_HEAD = re.compile(r"^#{2,3}\s+(backout|back\s+out)(\s+plan)?\s*$", re.I)
+TEST_PLAN_HEAD = re.compile(r"^#{2,3}\s+test\s+plan\s*$", re.I)
+SECTION_END = re.compile(r"^#{1,3}\s")
+# An unclosed comment runs to the end of the body, as a renderer shows it.
+HTML_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
+FILLER = {"tbd", "todo", "n/a", "na", "none", "later", "will test later", "-"}
+REHEARSED = re.compile(r"^\s*rehearsed:\s*https?://\S+", re.I | re.M)
+# Development's PR-body set (sf#1482): the signature first line, the Summary,
+# Evidence and Merge danger headings, the door words and Blast radius line the
+# Merge danger section must carry, and the issue link.
+SIGNATURE = re.compile(r"^\*\*agent:\*\* ")
+SUMMARY_HEAD = re.compile(r"^#{2,3}\s+summary\s*$", re.I)
+EVIDENCE_HEAD = re.compile(r"^#{2,3}\s+evidence\s*$", re.I)
+MERGE_DANGER_HEAD = re.compile(r"^#{2,3}\s+merge\s+danger\s*$", re.I)
+DOOR = re.compile(r"\b(two|one)-way door\b", re.I)
+BLAST_RADIUS = re.compile(r"^Blast radius:", re.M)
+ISSUE_LINK = re.compile(r"/issues/\d+\b")
+
+
+def die(msg, code=2):
+    sys.stderr.write(f"merge-check: {msg}\n")
+    sys.exit(code)
+
+
+def get(api, token, path, scheme="token", who="forge"):
+    req = urllib.request.Request(api + path, headers={"Authorization": f"{scheme} {token}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:  # never echo the token or the body
+        die(f"{who} GET {path.split('?')[0]} failed: {type(e).__name__}")
+
+
+def get_text(api, token, path):
+    """<path> on Forge as text, or None when the read fails. Never fatal, never echoes the token."""
+    req = urllib.request.Request(api + path, headers={"Authorization": f"token {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def git_path(raw):
+    """Decode Git's C-quoted UTF-8 path before stripping its side prefix."""
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = codecs.escape_decode(raw[1:-1].encode())[0].decode("utf-8", "replace")
+    return raw[2:] if raw.startswith(("a/", "b/")) else raw
+
+
+def ruling_removed(diff):
+    """Track old hunk lines; header syntax is metadata only before a hunk."""
+    path, old_line = "", None
+    for ln in diff.split("\n"):
+        ln = ln.removesuffix("\r")
+        if ln.startswith("diff --git "):
+            header = re.match(r'("(?:\\.|[^"\\])*"|a/.*?) (?:"b/|b/)', ln[11:])
+            path = git_path(header.group(1)) if header else "unknown path"
+            old_line = None
+            continue
+        if ln.startswith("@@"):
+            header = re.match(r"@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@", ln)
+            if not header:
+                return f"diff for {path} cannot be checked for ruling lines"
+            old_line = int(header.group(1))
+            continue
+        if old_line is None and (ln.startswith("Binary files ") or ln == "GIT binary patch"):
+            return f"binary change to {path} cannot be checked for ruling lines"
+        if old_line is None and ln.startswith("--- "):
+            path = git_path(ln[4:])
+            continue
+        if old_line is None:
+            continue
+        if ln.startswith("-") and re.search(r"(?i)\brico\b", ln):
+            return f"changes a Rico ruling: {path}:{old_line}: {ln[1:].strip()[:80]}"
+        if ln.startswith(("-", " ")):
+            old_line += 1
+    return None
+
+
+def get_pr_files(api, token, path):
+    """Complete structured file list, or None on any unreadable page."""
+    out = []
+    for page in range(1, 101):
+        raw = get_text(api, token, f"{path}?limit={PAGE}&page={page}")
+        try:
+            items = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(items, list) or any(
+                not isinstance(f, dict) or not isinstance(f.get("filename"), str) or not f["filename"]
+                or (f.get("previous_filename") is not None and not isinstance(f["previous_filename"], str))
+                for f in items):
+            return None
+        out.extend(items)
+        if len(items) < PAGE:
+            return out
+    return None
+
+
+def protected_file(path):
+    return path in ("_DOCS/decisions.md", "_DOCS/decisions-ledger.md") or path.rsplit("/", 1)[-1] == "AGENTS.md"
+
+
+def get_all(api, token, path):
+    out = []
+    for page in range(1, 101):
+        items = get(api, token, f"{path}?limit={PAGE}&page={page}")
+        if not isinstance(items, list):
+            break
+        out.extend(items)
+        if len(items) < PAGE:
+            break
+    return out
+
+
+def enrolled_checks(api, token, repo):
+    """The `checks:` value config/repos.yml gives <repo>; "standard" when unlisted.
+
+    No YAML library on the box, so this reads the one shape the file uses: the
+    top-level `repositories:` list, each item opened by `  -` and holding keys at
+    four spaces. Every `  -` opens a new item and name/checks are read in any
+    order, so one item's lane can never land on another (SOF-2653).
+    """
+    owner_repo, path, ref = ENROLMENT
+    doc = get(api, token, f"/repos/{owner_repo}/contents/{path}?ref={ref}")
+    try:
+        text = base64.b64decode(doc.get("content") or "").decode()
+    except Exception as e:
+        die(f"{path} on {owner_repo}@{ref} is not readable: {type(e).__name__}")
+    lines = text.splitlines()
+    if "repositories:" not in (ln.split("#")[0].rstrip() for ln in lines):
+        die(f"{path} on {owner_repo}@{ref} has no repositories: list")
+    inside, item, items = False, None, []
+    for ln in lines:
+        bare = ln.split("#")[0].rstrip()
+        if not bare:
+            continue
+        if not bare[0].isspace():
+            inside, item = bare == "repositories:", None
+            continue
+        if not inside:
+            continue
+        start = re.fullmatch(r"  -(?: (.*))?", bare)
+        if start:
+            item, body = {}, start.group(1) or ""
+            items.append(item)
+        elif item is not None and re.match(r"    \S", bare):
+            body = bare[4:]
+        else:
+            continue
+        kv = re.fullmatch(r"(name|checks):\s*[\"']?([\w./-]+)[\"']?", body)
+        if kv:
+            item[kv.group(1)] = kv.group(2)
+    found = None
+    for it in items:
+        if it.get("name") == repo:
+            found = it.get("checks")
+    return found or "standard"
+
+
+def body_section(body, head):
+    """The content under the first <head> line of <body>, or None when it is missing.
+
+    HTML comments are dropped from the whole body first (an unclosed one runs to
+    the end), so a heading or content a renderer hides is not there. A section
+    runs to the next `#`..`###` heading or the end of the body, and content that
+    is only filler (TBD, n/a, ...) is no section at all.
+    """
+    lines = HTML_COMMENT.sub("", body or "").splitlines()
+    for i, ln in enumerate(lines):
+        if not head.match(ln):
+            continue
+        rest = []
+        for nxt in lines[i + 1:]:
+            if SECTION_END.match(nxt):
+                break
+            rest.append(nxt)
+        text = "\n".join(rest).strip()
+        # A bare "-" strips to nothing, so an empty remainder is filler too.
+        norm = text.lower().strip(".:- \t\r\n")
+        if not norm or norm in FILLER:
+            return None
+        return text
+    return None
+
+
+def body_set_missing(body):
+    """The first item of Development's PR-body set (sf#1482) <body> lacks, else None.
+
+    Order: the `**agent:** ` signature as the first visible line, `## Summary`,
+    `## Evidence`, `## Merge danger` with `two-way door` or `one-way door` and
+    a line starting `Blast radius:`, then an `/issues/<n>` link. Hidden HTML
+    comments do not count, as in body_section.
+    """
+    visible = HTML_COMMENT.sub("", body or "")
+    first = next((ln.strip() for ln in visible.splitlines() if ln.strip()), "")
+    if not SIGNATURE.match(first):
+        return "missing **agent:** signature first line"
+    if body_section(body, SUMMARY_HEAD) is None:
+        return "missing ## Summary"
+    if body_section(body, EVIDENCE_HEAD) is None:
+        return "missing ## Evidence"
+    danger = body_section(body, MERGE_DANGER_HEAD)
+    if danger is None:
+        return "missing ## Merge danger"
+    if not DOOR.search(danger):
+        return "missing two-way door or one-way door in merge danger"
+    if not BLAST_RADIUS.search(danger):
+        return "missing Blast radius: line in merge danger"
+    if not ISSUE_LINK.search(visible):
+        return "missing /issues/<n> link"
+    return None
+
+
+def when(stamp):
+    """<stamp> (ISO 8601 with an offset, board or Forge) as an aware datetime, else None."""
+    try:
+        t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else None
+
+
+def override_by(api, token, repo, num, since, author):
+    """The first login among <author> and OVERRIDERS whose Forge PR comment opens
+    with `just do it` at or after <since> (Smythe's kickback), else None."""
+    since, allowed = when(since), {author, *OVERRIDERS} - {""}
+    if since is None:
+        return None
+    for c in get_all(api, token, f"/repos/{repo}/issues/{num}/comments"):
+        login = (c.get("user") or {}).get("login") or ""
+        at = when(c.get("created_at") or "")
+        first = (c.get("body") or "").split("\n", 1)[0].strip()
+        if login in allowed and at is not None and at >= since and OVERRIDE.match(first):
+            return login
+    return None
+
+
+def dispatched(dispatches, at):
+    """The agent id Smythe's latest dispatch before <at> authorizes, or None.
+
+    <dispatches> is [(at, agent id or None)] on one review issue. The latest
+    dispatch at or before <at> decides; one at <at> itself authorizes nobody (the
+    verdict must come after it), so a redispatch at the verdict's own instant
+    ends the earlier window. Two dispatches at the latest instant naming
+    different agents authorize nobody.
+    """
+    before = [d for d in dispatches if d[0] <= at]
+    if not before:
+        return None
+    last = max(d[0] for d in before)
+    if last == at:
+        return None
+    targets = {d[1] for d in before if d[0] == last}
+    return targets.pop() if len(targets) == 1 else None
+
+
+def decide(events, escalates):
+    """(verdict or None, held reason or None) from one head's authorized events.
+
+    <events> is [(at, who, verdict, why)]: who is "smythe", "lead" or
+    "decision" (Smythe's `smythe: approve|kickback: <why>` line). The latest
+    event wins. A decision line counts only after the latest `escalate: <why>`,
+    a dispatched lead's or Smythe's own (<escalates> is [(at, why)]), and after
+    that escalate only
+    Smythe's later events count; with none the PR is held for him.
+    """
+    if escalates:
+        at, why = max(escalates)
+        events = [e for e in events if e[1] != "lead" and e[0] > at]
+        if not events:
+            return None, f"smythe review: {why}"
+    else:
+        events = [e for e in events if e[1] != "decision"]
+    if not events:
+        return None, None
+    _, _, verdict, why = max(events)
+    if verdict == "kickback":
+        return None, f"kickback: {why}"
+    return verdict, None
+
+
+def lead_verdict(board, key, company, repo, num, sha, escalates=(), pair=False):
+    """(the authorized verdict for exactly this head or None, events).
+
+    The verdict is Smythe's or the dispatched Review Lead's, the latest
+    (decide). The events are held, `smythe review: <why>` while an escalation
+    (a dispatched lead's, or Smythe's own `escalate:` or legacy `council call:`)
+    waits on Smythe or `kickback: <why>` when he kicked it back, or None;
+    smythe, his newest (at, approve|kickback, why) decision line under this
+    head's review heading, or None; and review, the newest authorized verdict
+    comment's body.
+
+    sf#1730: <escalates> are the reviewer pair's [(at, why)], held for Smythe
+    as a lead's are; with <pair> (pair tasks exist for this head) no lead's
+    verdict counts. ev["smythe_at"] is Smythe's newest event on this head.
+    """
+
+    def bget(path):
+        return get(board, key, path, scheme="Bearer", who="board")
+
+    agents = bget(f"/api/companies/{company}/agents")
+    leads = [a.get("id") for a in agents if a.get("name") == LEAD_NAME and a.get("id")] if isinstance(agents, list) else []
+    if len(leads) != 1:
+        die(f"board has {len(leads)} agents named {LEAD_NAME}, need exactly 1")
+    # A Review Lead is the one agent of that name; a name held by none or by two
+    # can be dispatched nothing (SOF-8387).
+    lead_of = {}
+    for name in REVIEW_LEADS:
+        ids = [a.get("id") for a in agents if a.get("name") == name and a.get("id")]
+        lead_of[name] = ids[0] if len(ids) == 1 else None
+    lead_ids = {i for i in lead_of.values() if i}
+    decisions = []
+    title = f"Review {repo}#{num} @ {sha[:7]}"
+    # The lead's heading, bare or with the PR linked as company-conduct asks:
+    # `## Review of owner/repo#n at sha7` or `## Review of [owner/repo#n](url) at sha7`.
+    ref = re.escape(f"{repo}#{num}")
+    heading = re.compile(rf"^## Review of (?:{ref}|\[{ref}\]\([^)\s]*\)) at {sha[:7]}\s*$", re.M)
+    issues = bget(f"/api/companies/{company}/issues?q={urllib.parse.quote(title)}&limit={PAGE}")
+    events, handed, reviewed = [], list(escalates), []
+    for issue in issues if isinstance(issues, list) else []:
+        # Bound to the full head: the 7 characters in the title are not enough.
+        if issue.get("title") != title or sha not in (issue.get("description") or ""):
+            continue
+        comments = bget(f"/api/issues/{urllib.parse.quote(str(issue.get('id')), safe='')}/comments")
+        comments = [c for c in comments if isinstance(c, dict)] if isinstance(comments, list) else []
+        # Smythe's dispatches on THIS issue: who each one authorizes. A comment
+        # naming two leads, or anyone not a Review Lead, authorizes nobody.
+        dispatches = []
+        for c in comments:
+            if c.get("authorAgentId") != leads[0]:
+                continue
+            named = set(DISPATCH.findall(c.get("body") or ""))
+            if named:
+                one = named.pop() if len(named) == 1 else None
+                dispatches.append((c.get("createdAt") or "", lead_of.get(one) if one else None))
+        # His assignment of the issue to a Review Lead is the same dispatch
+        # (review-dispatch step 2), from the board's activity log: actorType and
+        # actorId are the board's stamp, never a comment's text. A move to anyone
+        # else ends the window as a dispatch to a non-lead does.
+        if lead_ids:
+            iid = urllib.parse.quote(str(issue.get("id")), safe="")
+            acts = bget(f"/api/issues/{iid}/activity")
+            for a in acts if isinstance(acts, list) else []:
+                moved = (((a.get("details") or {}).get("changes") or {}).get("assigneeAgentId")
+                         if isinstance(a, dict) and a.get("action") == "issue.updated" else None)
+                if (isinstance(moved, dict) and a.get("actorType") == "agent"
+                        and a.get("actorId") == leads[0] and a.get("createdAt")):
+                    to = moved.get("to")
+                    dispatches.append((a["createdAt"], to if to in lead_ids else None))
+        for c in comments:
+            body, who, at = c.get("body") or "", c.get("authorAgentId"), c.get("createdAt") or ""
+            # Smythe's verdict always counts; a Review Lead's only inside its dispatch.
+            lead = not pair and who != leads[0] and who is not None and dispatched(dispatches, at) == who
+            # A dispatched lead's escalate hands the decision to Smythe; Smythe's own
+            # `escalate:` or legacy `council call:` line is the same escalate (Rico,
+            # 2026-10-06), held until he answers after it.
+            if (lead or who == leads[0]) and ESCALATE.findall(body):
+                handed.append((at, ESCALATE.findall(body)[-1]))
+            if who == leads[0] and SMYTHE_SAYS.findall(body):
+                word, why = SMYTHE_SAYS.findall(body)[-1]
+                events.append((at, "decision", "approve" if word == "approve" else "kickback", why))
+            if who == leads[0]:
+                # A decision counts only under the review heading naming this
+                # head: another head's approve or kickback decides nothing here.
+                said = SMYTHE.findall(body) if heading.search(body) else []
+                if said:
+                    word, why = said[-1]
+                    decisions.append((at, "approve" if word == "approve" else "kickback", why or None))
+            if (who != leads[0] and not lead) or not heading.search(body):
+                continue
+            lines = VERDICT.findall(body)
+            if lines:
+                events.append((at, "smythe" if who == leads[0] else "lead", lines[-1], None))
+                # The review Jev merge-go reads: the newest authorized verdict comment.
+                reviewed.append((at, body))
+    verdict, held = decide(events, handed)
+    ev = {"held": held, "smythe": max(decisions) if decisions else None,
+          "review": max(reviewed)[1] if reviewed else ""}
+    # Smythe's own: his verdicts and decision lines, and the escalates after the
+    # seeded ones (a lead's count only without a pair, where this is unused).
+    ev["answered"] = max([e[0] for e in events if e[1] != "lead"], default="")
+    ev["smythe_at"] = max([ev["answered"]] + [d[0] for d in decisions]
+                          + [h[0] for h in handed[len(escalates):]], default="")
+    return verdict, ev
+
+
+def pair_verdict(board, key, company, repo, num, sha, author=""):
+    """(approve|fix-first|pending|escalated, ev) from the reviewer pair on this head (sf#1730).
+
+    A pair task binds to the head by its exact title `Review <repo>#<n> @ <sha7>
+    (<Name>)` and the full <sha> in its description, and is one forge-pr filed
+    (originKind PAIR_ORIGIN) or Smythe filed (createdByAgentId, L-173): a lead's
+    own child tasks carry the same title. A comment counts only by the
+    board's stamp authorAgentId, held by a seat in exactly one family and not the
+    PR author's own seat (<author> is the Forge login, `sf-<name>`), under this
+    head's review heading. Per family the newest verdict wins, a tie going to
+    fix-first; approve-with-fixes is fix-first. Any fix-first is fix-first, both
+    approve is approve, else pending. A reviewer's `escalate:` (or `council
+    call:`) line is escalated, for Smythe. Forge is never read.
+    Smythe files a pair per slice (L-173), so every exact-head task counts
+    on its own regardless of status: any task's newest fix-first is fix-first,
+    any task without a verdict is pending unless cancelled, whatever another
+    slice's task of that family said.
+    """
+
+    def bget(path):
+        return get(board, key, path, scheme="Bearer", who="board")
+
+    agents = bget(f"/api/companies/{company}/agents")
+    agents = [a for a in agents if isinstance(a, dict)] if isinstance(agents, list) else []
+    own = author[3:].lower() if author.startswith("sf-") else None
+
+    def seats(names):
+        out = set()
+        for name in names:
+            ids = [a.get("id") for a in agents if a.get("name") == name and a.get("id")]
+            out |= set(ids) if len(ids) == 1 else set()
+        return out - {a.get("id") for a in agents if own and str(a.get("name") or "").lower() == own}
+
+    fams = {"claude": seats(CLAUDE_REVIEWERS), "gpt": seats(GPT_REVIEWERS)}
+    # The Head of Review's agent id, when exactly one agent holds the name.
+    heads = [a.get("id") for a in agents if a.get("name") == LEAD_NAME and a.get("id")]
+    head = heads[0] if len(heads) == 1 else None
+    stem = f"Review {repo}#{num} @ {sha[:7]} ("
+    titles = {f"{stem}{n})" for n in CLAUDE_REVIEWERS + GPT_REVIEWERS}
+    ref = re.escape(f"{repo}#{num}")
+    heading = re.compile(rf"^## Review of (?:{ref}|\[{ref}\]\([^)\s]*\)) at {sha[:7]}\s*$", re.M)
+    issues = bget(f"/api/companies/{company}/issues?q={urllib.parse.quote(stem)}&limit={PAGE}")
+    tasks, said, handed, by_task, blast_by_task = 0, {"claude": [], "gpt": []}, [], {}, {}
+    for issue in issues if isinstance(issues, list) else []:
+        if not isinstance(issue, dict) or issue.get("title") not in titles or sha not in (issue.get("description") or ""):
+            continue
+        # Filed by the forge-pr plugin, or by Smythe himself (review-dispatch
+        # step 3; Rico, 2026-10-08, L-173): the board's creator stamp, never text.
+        if issue.get("originKind") != PAIR_ORIGIN and not (head and issue.get("createdByAgentId") == head):
+            continue
+        # Read verdicts before status: cancellation never removes evidence.
+        mine = []
+        comments = bget(f"/api/issues/{urllib.parse.quote(str(issue.get('id')), safe='')}/comments")
+        for c in comments if isinstance(comments, list) else []:
+            if not isinstance(c, dict):
+                continue
+            body, who, at = str(c.get("body") or ""), c.get("authorAgentId"), str(c.get("createdAt") or "")
+            fam = [f for f, ids in fams.items() if who in ids]
+            if len(fam) != 1:
+                continue
+            if ESCALATE.findall(body):
+                handed.append((at, ESCALATE.findall(body)[-1]))
+            lines = VERDICT.findall(body) if heading.search(body) else []
+            if lines:
+                # R1: the last blast-radius line of the same comment; `wrong` is fix-first.
+                blast = BLAST.findall(body)
+                b = ("wrong" if blast[-1][1] else "confirmed") if blast else ""
+                v = "approve" if lines[-1] == "approve" and b != "wrong" else "fix-first"
+                said[fam[0]].append((at, v == "fix-first", v, body, b))
+                mine.append((at, v == "fix-first", v, b))
+        if not mine and issue.get("status") == "cancelled":
+            continue
+        tasks += 1
+        tid = str(issue.get("identifier") or issue.get("id"))
+        by_task[tid] = max(mine)[2] if mine else None
+        blast_by_task[tid] = (max(mine)[3] or None) if mine else None
+    newest = {f: max(vs) if vs else None for f, vs in said.items()}
+    return pair_state(newest, handed, tasks, by_task=by_task, blast_by_task=blast_by_task)
+
+
+def pair_state(newest, handed, tasks, answered="", by_task=None, blast_by_task=None):
+    """pair_verdict's (state, ev) from each family's newest verdict and the escalates.
+
+    An escalate Smythe answered (an event of his strictly after it, <answered>
+    being his newest, lead_verdict's ev["answered"]) is resolved and dropped, so
+    a later pair comment never reopens it. ev["escalates"] keeps all of them,
+    for lead_verdict to weigh against his answers. <by_task> ({task: its newest
+    verdict or None}, L-173) decides per task when given; None keeps the
+    per-family rule. <blast_by_task> ({task: its newest verdict's blast or None})
+    is carried in ev for R1.
+    """
+    escalates, handed = handed, [h for h in handed if h[0] >= answered]
+    missing = [f for f, v in newest.items() if v is None]
+    if by_task is not None and not missing:
+        missing = [t for t, v in by_task.items() if v is None]
+    if by_task is None:
+        fixes = any(v and v[2] == "fix-first" for v in newest.values())
+    else:
+        fixes = "fix-first" in by_task.values()
+    if handed:
+        state = "escalated"
+    elif fixes:
+        state = "fix-first"
+    else:
+        state = "pending" if missing else "approve"
+    counted = [v for v in newest.values() if v]
+    ev = {"held": f"smythe review: {max(handed)[1]}" if handed else None, "smythe": None,
+          "review": max(counted)[3] if counted else "", "missing": missing, "tasks": tasks, "escalates": escalates,
+          "at": max([v[0] for v in counted] + [h[0] for h in handed], default=""), "newest": newest,
+          "by_task": by_task, "blast_by_task": blast_by_task}
+    ev.update({f: ({"verdict": v[2], "at": v[0], "blast": v[4] or None} if v else None) for f, v in newest.items()})
+    return state, ev
+
+
+def review_verdict(board, key, company, repo, num, sha, login=""):
+    """The merge gate's authoritative verdict, evidence and counted pair tasks."""
+    state, pev = pair_verdict(board, key, company, repo, num, sha, login)
+    verdict, ev = lead_verdict(board, key, company, repo, num, sha, pev["escalates"], pev["tasks"] > 0)
+    if pev["tasks"]:
+        # An escalate Smythe answered is resolved; a later pair comment never reopens it.
+        state, pev = pair_state(pev["newest"], pev["escalates"], pev["tasks"], ev["answered"],
+                                by_task=pev["by_task"], blast_by_task=pev["blast_by_task"])
+    if pev["tasks"] and ev["smythe_at"] <= pev["at"]:
+        # An unanswered escalate stays held whatever the pair says after it: only
+        # Smythe's answer clears it, never a newer pair verdict.
+        held = ev["held"] if str(ev["held"] or "").startswith("smythe review: ") else pev["held"]
+        verdict, ev = (state if state in ("approve", "fix-first") else None), {**pev, "smythe": ev["smythe"], "held": held}
+    return verdict, ev, pev
+
+def scripted_non_code(api, token, repo, num, sha):
+    """True only when factoryignore-cli exits 0 for <sha> with nonCode true and
+    nothing refused (sf#1730 US-002). Anything else, a failure included, is False."""
+    cli = os.environ.get("FACTORYIGNORE_CLI") or FACTORYIGNORE_CLI
+    env = {**os.environ, "FORGEJO_API_URL": api, "FORGEJO_TOKEN": token}
+    try:
+        p = subprocess.run([cli, repo, num, sha], env=env, capture_output=True, timeout=120)
+        if p.returncode != 0:
+            return False
+        v = json.loads(p.stdout.decode().strip())
+    except Exception:  # never echo the token or the output
+        return False
+    return isinstance(v, dict) and v.get("nonCode") is True and v.get("refused") == []
+
+
+def precedents_file():
+    base = os.environ.get("FLEET_STATE_DIR") or os.path.expanduser("~/.local/state/fleet")
+    return os.path.join(base, PRECEDENTS)
+
+
+def read_precedents(repo):
+    """Every precedent line for <repo>, oldest first; unreadable lines are skipped."""
+    rows = []
+    try:
+        with open(precedents_file()) as f:
+            for ln in f:
+                try:
+                    rows.append(json.loads(ln))
+                except ValueError:
+                    continue
+    except (OSError, ValueError):
+        return []
+    return [r for r in rows if isinstance(r, dict) and r.get("repo") == repo]
+
+
+def record_precedent(row):
+    """Append <row> once per (repo, number, head). A failure is logged, never fatal."""
+    path = precedents_file()
+    if any(r.get("number") == row["number"] and r.get("head") == row["head"] for r in read_precedents(row["repo"])):
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError as e:
+        sys.stderr.write(f"merge-check: precedent not written to {path}: {type(e).__name__}\n")
+
+
+def ask_merge_go(state):
+    """(p, GO?) from Jev merge-go for <state>, or (None, False) on no signal.
+
+    NO SIGNAL IS NEVER A PASS (src/jev/client.ts). GO is the classifier's yes
+    (p >= 0.5) at its `confident` threshold; unsure is not GO. The key goes in
+    the header only and is never echoed.
+    """
+    key = os.environ.get("TYPESAFE_API_KEY") or os.environ.get("JEV_API_KEY") or ""
+    try:
+        with open(MERGE_GO) as f:
+            clf = json.load(f)
+        if not key:
+            return None, False
+        q = {"type": "noul", "instructions": clf["ask"]}
+        body = json.dumps({"model": JEV_MODEL, "state": state, "questions": {clf["id"]: q}}).encode()
+        req = urllib.request.Request(os.environ.get("JEV_API_URL") or JEV_ENDPOINT, data=body, method="POST",
+                                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            a = json.loads(r.read().decode())["answers"][clf["id"]]
+        p = a.get("noul") if isinstance(a, dict) else None
+        if isinstance(p, bool) or not isinstance(p, (int, float)) or not 0 <= p <= 1:
+            return None, False
+        return float(p), p >= 0.5 and max(p, 1 - p) >= float(clf["confident"])
+    except Exception:  # never echo the key, the state or the body
+        return None, False
+
+
+def main(argv):
+    pos, base, i = [], None, 0
+    while i < len(argv):
+        if argv[i] == "--base-url":
+            if i + 1 >= len(argv):
+                die("--base-url needs a value")
+            base, i = argv[i + 1], i + 2
+            continue
+        if argv[i].startswith("--"):
+            die(f"unknown flag {argv[i]}")
+        pos.append(argv[i])
+        i += 1
+    if (len(pos) != 3 or not re.fullmatch(r"[\w.-]+/[\w.-]+", pos[0]) or not pos[1].isdigit()
+            or not re.fullmatch(r"[0-9a-f]{40}", pos[2])):
+        die("usage: merge-check <owner/repo> <pr-number> <head-sha40> [--base-url URL]")
+    repo, num, sha = pos
+    # client/* first, before any read of Forge or the board (sf#1375).
+    if CLIENT.match(repo) and not KING_ON_FORGE.fullmatch(repo):
+        print(json.dumps({"class": "C", "mergeable": False, "checks": None,
+                          "reasons": ["client repos are off-limits until they move from GitHub (sf#1375)"]}))
+        return
+    api =(base or os.environ.get("FORGEJO_API_URL", "")).rstrip("/")
+    token = os.environ.get("FORGEJO_TOKEN", "")
+    if not api or not token:
+        die("--base-url (or FORGEJO_API_URL) and FORGEJO_TOKEN are required")
+    board = os.environ.get("PAPERCLIP_API_URL", "").rstrip("/")
+    key = os.environ.get("PAPERCLIP_API_KEY", "")
+    company = os.environ.get("PAPERCLIP_COMPANY_ID", "")
+    if not board or not key or not re.fullmatch(r"[\w-]+", company):
+        die("PAPERCLIP_API_URL, PAPERCLIP_API_KEY and PAPERCLIP_COMPANY_ID are required")
+
+    def out(cls, reasons, checks=None, smythe=None, jev=None):
+        print(json.dumps({"class": cls, "mergeable": cls == "A", "checks": checks,
+                          "smythe": smythe, "jev": jev, "reasons": reasons}))
+
+    pr = get(api, token, f"/repos/{repo}/pulls/{num}")
+    live = (pr.get("head") or {}).get("sha", "")
+    if pr.get("merged") or pr.get("state") != "open":
+        return out("stale", [f"PR is {'merged' if pr.get('merged') else pr.get('state')}"])
+    if live != sha:
+        return out("stale", [f"head moved: live {live[:7]} != {sha[:7]}"])
+    # sf#1911: a stacked child merges into its parent branch, not the default
+    # (rtech-consulting#909 landed in its parent). Class C until the parent lands
+    # and the child is retargeted; no base on Forge fails closed. The verdict and
+    # status reasons below still run, so the list is complete.
+    ref = (pr.get("base") or {}).get("ref")
+    default = ((pr.get("base") or {}).get("repo") or {}).get("default_branch")
+    stacked = []
+    if not ref or not default:
+        stacked.append("base branch unknown")
+    elif ref != default:
+        stacked.append(f"stacked: base {ref} is not the default branch {default}; land the parent, then retarget")
+
+    # Both sides of a rename: Forge reports the old path as previous_filename
+    # (probed on rodaddy/software-factory pulls 380 and 411, status "renamed").
+    names, paths = [], []
+    files = get_pr_files(api, token, f"/repos/{repo}/pulls/{num}/files")
+    for f in files or []:
+        names.extend(n for n in (f.get("filename"), f.get("previous_filename")) if n)
+        paths.append({"path": f.get("filename"), "add": f.get("additions"), "del": f.get("deletions")})
+    sized = lambda ps: "\n".join(f"{p.get('path')} +{p.get('add', '?')} -{p.get('del', '?')}" for p in ps)
+    # The PR-body gate (sf#1413; Rico, 2026-10-05: "Any PR that doesn't have a
+    # back out plan and a test plan gets denied hard"): on every repo, whoever
+    # opened it, a body with no real Backout or Test plan section is class C. A
+    # big change (a SMYTHE_REPOS repo, a deploy/secrets/auth/CI path, or anything but
+    # markdown on rtech-infra) must also have rehearsed its backout, linked from
+    # the Backout section as `rehearsed: <url>`. The verdict and status reasons
+    # below still run, so the list is complete.
+    backout = body_section(pr.get("body"), BACKOUT_HEAD)
+    big = (bool(SMYTHE_REPOS.match(repo)) or any(rx.search(n) for _, rx in HUMAN_RULES for n in names)
+           or (repo == "rtech/rtech-infra" and any(not n.endswith(".md") for n in names)))
+    gate = []
+    if backout is None:
+        gate.append("missing backout plan")
+    if body_section(pr.get("body"), TEST_PLAN_HEAD) is None:
+        gate.append("missing test plan")
+    if big and backout is not None and not REHEARSED.search(backout):
+        gate.append("big change without a rehearsed backout")
+    missing = body_set_missing(pr.get("body"))
+    if missing:
+        gate.append(missing)
+
+    reasons = []
+    # sf#1690: a removed line carrying a ruling is Rico's (class B, below). A
+    # diff that cannot be read never makes a PR mergeable.
+    diff = get_text(api, token, f"/repos/{repo}/pulls/{num}.diff")
+    protected = next((n for n in names if protected_file(n)), None)
+    ruling = f"change to a ruling file {protected}" if protected else ruling_removed(diff) if diff is not None else None
+    if files is None:
+        reasons.append("could not read the PR file list for the ruling check")
+    if diff is None:
+        reasons.append("could not read the diff for the ruling check")
+    # The opener is Forge's stamp: the author who may override a kickback.
+    login = (pr.get("user") or {}).get("login") or ""
+    # sf#1730: Smythe's verdict on this head > the reviewer pair (when a pair
+    # task for it exists) > a legacy parent's dispatched lead.
+    verdict, ev, pev = review_verdict(board, key, company, repo, num, sha, login)
+
+    # sf#1730 US-002: no board verdict and nothing held, so re-derive the
+    # non-code fast path for this exact head. A board verdict always wins.
+    scripted = verdict is None and not ev.get("smythe") and not pev["tasks"] and not ev["held"] and scripted_non_code(api, token, repo, num, sha)
+    if scripted:
+        verdict = "approve"
+    if ev["held"]:
+        reasons.append(ev["held"])
+    elif verdict == "fix-first":
+        reasons.append("review verdict fix-first")
+    elif verdict is None and pev["tasks"]:
+        reasons.append(f"pair verdict pending ({', '.join(pev['missing'])}) on {sha[:7]}")
+    elif verdict is None:
+        reasons.append(f"no lead verdict on the board for {sha[:7]}")
+    status = get(api, token, f"/repos/{repo}/commits/{sha}/status")
+    states = {s.get("context"): s.get("status") or s.get("state") for s in (status.get("statuses") or [])}
+    # A head with no factory/* status is a repo the factory does not check
+    # (Rico, 2026-10-06, sf#1493: agents decide, not Rico). Its own CI meets the
+    # checks requirement when every status is success ("repo-ci"); a failing or
+    # pending one is red or pending, exactly as a factory check. A head with no
+    # status at all is Smythe's (checks "none", class C until he decides).
+    # A repo in OWN_CI (sf#1400) always requires its own contexts, so a head
+    # carrying only some of them is never read as "repo-ci".
+    # SOF-12237: in repo CI a "skipped" job is one its own workflow chose not to
+    # run on this event (a deploy gated on a push to main); it is neither red
+    # nor pending, as Forgejo's combined state already reads it. At least one
+    # job must still be success: a head where every status is skipped proves
+    # nothing. A required factory/* or OWN_CI context is unchanged: skipped
+    # there is still not success.
+    own_ci = OWN_CI.get(repo)
+    if not states:
+        checks = "none"
+    elif own_ci is None and not any(str(ctx).startswith("factory/") for ctx in states):
+        checks = "repo-ci"
+        if all(st == "skipped" for st in states.values()):
+            reasons.append("every repo CI status is skipped")
+            checks = "pending"
+        for ctx, st in sorted(states.items(), key=lambda kv: str(kv[0])):
+            if st not in ("success", "skipped"):
+                reasons.append(f"{ctx} is {st or 'missing'}")
+                if st in ("failure", "error"):
+                    checks = "red"
+                elif checks != "red":
+                    checks = "pending"
+    else:
+        checks = "green"
+        required = own_ci
+        if required is None:
+            static = enrolled_checks(api, token, repo) == "static-only"
+            required = REQUIRED_STATIC if static else REQUIRED
+        for ctx in required:
+            if states.get(ctx) != "success":
+                reasons.append(f"{ctx} is {states.get(ctx) or 'missing'}")
+                if states.get(ctx) in ("failure", "error"):
+                    checks = "red"
+                elif checks != "red":
+                    checks = "pending"
+    if stacked or gate or reasons:
+        return out("C", [*stacked, *gate, *reasons], checks)
+
+    # Rico's class (sf#1375, narrowed by sf#1493): the label needs-rico, which
+    # only Rico applies; or a diff that removes or edits a ruling line (sf#1690).
+    if any((lb.get("name") == "needs-rico") for lb in (pr.get("labels") or [])):
+        return out("B", ["label needs-rico"], checks)
+    if ruling:
+        return out("B", [ruling], checks)
+    routine = f"verdict {verdict}; required statuses green"
+    # Rico, 2026-10-06: a head with no status at all, a SMYTHE_REPOS
+    # repo, or any Smythe decision line waits on Smythe. `smythe: approve` is A;
+    # `smythe: kickback: <why>` is C back to the author, until the author or
+    # rodaddy posts `just do it` on the Forge PR at or after the kickback.
+    why = (f"{sha[:7]} carries no status" if checks == "none"
+           else f"{repo} is Smythe's to review" if SMYTHE_REPOS.match(repo) else None)
+    if why or ev["smythe"]:
+        if ev["smythe"] is None:
+            return out("C", [f"smythe review: {why}"], checks, smythe={"decision": "pending", "reason": why, "override": None})
+        at, word, kick = ev["smythe"]
+        if word == "approve":
+            return out("A", ["smythe approved"], checks, smythe={"decision": "approve", "reason": why, "override": None})
+        who = override_by(api, token, repo, num, at, login)
+        s = {"decision": "kickback", "reason": kick, "override": who}
+        if not who:
+            return out("C", [f"kickback: {kick}"], checks, smythe=s)
+        # The override is a precedent Jev reads next time (Rico, 2026-10-06).
+        record_precedent({"repo": repo, "number": int(num), "head": sha, "title": str(pr.get("title") or "")[:300],
+                          "paths": paths[:30], "kickback": kick, "override_by": who,
+                          "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+        return out("A", [f"override by {who}"], checks, smythe=s)
+    # R1 (Rico, 2026-10-07, L-166): a pair approve whose reviewers both
+    # confirmed the PR's blast radius is the go, with no Jev call.
+    # L-173: with a pair per slice, every counted task's newest verdict must confirm.
+    per_task = ev.get("blast_by_task")
+    if (verdict == "approve" and all((ev.get(f) or {}).get("blast") == "confirmed" for f in ("claude", "gpt"))
+            and (per_task is None or all(b == "confirmed" for b in per_task.values()))):
+        return out("A", ["pair approve; blast radius confirmed by both"], checks)
+    # sf#1730 US-002: the re-derived non-code approve, its gates above all passed.
+    if scripted:
+        return out("A", ["scripted: non-code"], checks)
+    # A lead's approve asks Jev merge-go: GO merges; anything else is Smythe's.
+    rnd = re.search(r"\*\*Round:\*\*\s*(\d+)", ev["review"])
+    prior = [f"{r.get('title')} | {sized(r.get('paths') or [])} | kickback: {r.get('kickback')}"
+             for r in read_precedents(repo)[-10:]]
+    state = {"repo": repo, "title": str(pr.get("title") or "")[:300], "body": (pr.get("body") or "")[:STATE_MAX],
+             "paths": sized(paths)[:STATE_MAX], "verdict": verdict, "round": rnd.group(1) if rnd else "1",
+             "findings": ev["review"][:STATE_MAX], "checks": checks, "backout": (backout or "")[:300],
+             "sensitive": "yes" if big else "no", "precedents": "\n".join(prior)[:STATE_MAX] or "none"}
+    p, go = ask_merge_go(state)
+    score = "no signal" if p is None else f"{p:.2f}"
+    if go:
+        return out("A", [f"{routine}; jev merge-go {score}"], checks, jev=p)
+    return out("C", [f"smythe review: jev merge-go {score}"], checks,
+               smythe={"decision": "pending", "reason": f"jev merge-go {score}", "override": None}, jev=p)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

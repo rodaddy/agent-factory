@@ -1,0 +1,19 @@
+-- sf#719: `build_bump_bumps.settled_at` — WHEN a pair reached a terminal status,
+-- as distinct from `finished_at`, which this column now shadows for ordering.
+--
+-- The pair key is (candidate_id, app_dir) for all time. A marker environment
+-- that moves prod v2 -> v1 -> v2 finds v2's row still `opened` from the first
+-- move, the pair state machine refuses a non-`pending` row, and prod stays on v1
+-- forever with no signal. Ordering the terminal records of one `app_dir` by
+-- settlement time is what lets the pass see that v2's record was SUPERSEDED by a
+-- later bump and re-drive it.
+--
+-- NULLABLE with no default and no backfill: a row that settled before this
+-- column existed has no observation, and NULL sorting older than any set value
+-- is the correct reading — it predates every reopen.
+--
+-- Plain SQL with no `$$` dollar quoting — this file reaches Postgres through
+-- Bun.sql `unsafe()` in scripts/migrate.ts, which reads `$$` as a parameter
+-- marker (sf#457, ledger L-061). The statement is IF NOT EXISTS, so a re-run is
+-- a no-op.
+ALTER TABLE "build_bump_bumps" ADD COLUMN IF NOT EXISTS "settled_at" timestamp with time zone;

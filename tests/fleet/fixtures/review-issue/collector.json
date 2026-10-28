@@ -1,0 +1,20 @@
+{
+	"version": 1,
+	"complete": true,
+	"streams": [
+		{
+			"name": "events.jsonl",
+			"bytes": 88,
+			"sha256": "2a1d66674912de88bfd940683f81e6377f9cffe18a6b1532852a09d339d8cc31",
+			"truncated": false,
+			"discardedBytes": 0
+		},
+		{
+			"name": "stderr.txt",
+			"bytes": 9,
+			"sha256": "7dd55a75da1a839a4bc7eedbc8ff101f3cd528265b062ab106c31e23ce4a0ca2",
+			"truncated": false,
+			"discardedBytes": 0
+		}
+	]
+}

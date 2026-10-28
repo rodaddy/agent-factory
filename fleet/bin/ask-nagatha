@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+"""ask-nagatha: ask Nagatha an infra question, through the librarian, so every
+harness asks the same way; her `ANSWER:` comment is printed (sf#1235).
+
+Usage: ask-nagatha "<question>" [--direct] [--librarian-only] [--no-wait]
+                   [--timeout 600] [--json] [--asker NAME]
+
+1. Unless --direct: one read-only `query` job on the librarian (rtech-infra
+   scope, the argv `aqmd in rtech-infra` builds, plus --format json). Its hits
+   go to Nagatha as her starting points. qmd scores are rank-based (1, 1/2,
+   1/3 ...), so a hit's score says nothing about whether canon answers the
+   question; the librarian never decides that alone. --librarian-only prints
+   the hits and stops (a quick canon lookup, answered_by: librarian).
+2. Otherwise: POST the question and the librarian hits to the rodaddy.ask
+   plugin webhook, /api/plugins/rodaddy.ask/webhooks/ask by plugin key (headers
+   X-Ask-Token and X-Ask-Company; no /api/plugins reads, an agent key gets 403
+   there). The host answers a webhook with only {deliveryId, status}, never the
+   worker's result, so the new issue is found by listing the assignee's issues
+   in every status, done and cancelled included: the one titled like this
+   question, whose description carries it, that was not there before the POST.
+3. --no-wait prints the issue and exits; else poll its comments for her
+   `ANSWER:` until --timeout.
+
+Env: LIBRARIAN_URL (default http://10.0.1.20:7141),
+  PAPERCLIP_API_URL (default http://10.0.20.105:3100), PAPERCLIP_UI_URL
+  (links; default PAPERCLIP_API_URL), PAPERCLIP_API_KEY or PAPERCLIP_BOARD_TOKEN
+  (board or agent key, Authorization: Bearer), PAPERCLIP_COMPANY_ID (required),
+  ASK_WEBHOOK_URL (override the webhook URL), ASK_ASSIGNEE_AGENT_ID (default:
+  the company agent named Nagatha, from /api/companies/<id>/agents),
+  ASK_TOKEN or the file ASK_TOKEN_FILE (default ~/.config/fleet/ask-token),
+  ASK_POLL_SECONDS (default 5).
+
+Exit: 0 answered (or filed, with --no-wait); 1 harness error (librarian or
+board unreachable, auth refused); 2 bad usage; 3 timed out waiting.
+The ask token and the board key never reach stdout or stderr.
+"""
+import argparse
+import base64
+import getpass
+import json
+import os
+import re
+import socket
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+PLUGIN_KEY = "rodaddy.ask"
+ENDPOINT_KEY = "ask"
+TITLE_MAX = 120
+QUESTION_MAX = 4000
+LIST_STATUSES = ("todo", "in_progress", "in_review", "blocked", "backlog", "done", "cancelled")
+FIND_SECONDS = 30
+LIBRARIAN_MAX_SECONDS = 180
+RTECH_INFRA = "/opt/dev/rtech-infra"
+CITE_RE = re.compile(r"(?:qmd://)?[\w.@-]+(?:/[\w.@-]+)+(?::\d+)?")
+
+SECRETS = []
+
+
+def scrub(text):
+    text = str(text)
+    for s in SECRETS:
+        if s:
+            text = text.replace(s, "***")
+    return text
+
+
+def die(msg, code=1):
+    sys.stderr.write(f"ask-nagatha: {scrub(msg)}\n")
+    sys.exit(code)
+
+
+class HttpError(Exception):
+    def __init__(self, status, body):
+        super().__init__(f"HTTP {status}")
+        self.status = status
+        self.body = body
+
+
+def http(method, url, body=None, headers=None, timeout=20):
+    """One request. Returns (status, parsed JSON or text). Raises HttpError on
+    a non-2xx and OSError when the host cannot be reached."""
+    data = None if body is None else json.dumps(body).encode()
+    h = {"Accept": "application/json", **(headers or {})}
+    if data is not None:
+        h["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=h, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode("utf-8", "replace")
+            status = r.status
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace") if e.fp else ""
+        raise HttpError(e.code, raw[:300]) from None
+    try:
+        return status, (json.loads(raw) if raw else None)
+    except ValueError:
+        return status, raw
+
+
+# ---------------------------------------------------------------- librarian
+
+
+def query_argv(question):
+    # build_query_argv in _ob/bin/aqmd for `aqmd in rtech-infra "<q>"`
+    # (query_one_repo: --index development -c Development --path rtech-infra/),
+    # with --format json before the `--`.
+    return [
+        "query",
+        "--index",
+        "development",
+        "-c",
+        "Development",
+        "--path",
+        "rtech-infra/",
+        "--format",
+        "json",
+        "--",
+        question,
+    ]
+
+
+def citation_of(hit):
+    path = str(hit.get("file") or hit.get("path") or "").split("?", 1)[0]
+    line = hit.get("line")
+    return f"{path}:{line}" if isinstance(line, int) and line > 0 else path
+
+
+def parse_hits(stdout):
+    try:
+        raw = json.loads(stdout) if stdout.strip() else []
+    except ValueError:
+        die("librarian returned output that is not JSON")
+    if isinstance(raw, dict):
+        raw = raw.get("results") or raw.get("hits") or []
+    hits = []
+    for h in raw if isinstance(raw, list) else []:
+        if not isinstance(h, dict):
+            continue
+        try:
+            score = float(h.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        hits.append(
+            {
+                "path": str(h.get("file") or h.get("path") or "").split("?", 1)[0],
+                "line": h.get("line") if isinstance(h.get("line"), int) else None,
+                "title": str(h.get("title") or ""),
+                "score": score,
+                "snippet": str(h.get("snippet") or ""),
+                "citation": citation_of(h),
+            }
+        )
+    hits.sort(key=lambda h: h["score"], reverse=True)
+    return hits
+
+
+def ask_librarian(base, question):
+    """Submit ONLY a `query` job (the daemon's /jobs takes write jobs too, and
+    has no auth); never GET /search."""
+    body = {
+        "job_class": "query",
+        "collection": "rtech-infra",
+        "cwd": RTECH_INFRA,
+        "args": query_argv(question),
+    }
+    try:
+        _, ack = http("POST", f"{base}/jobs", body, timeout=10)
+        job = ack.get("id") if isinstance(ack, dict) else None
+        if not job:
+            die("librarian accepted no job")
+        deadline = time.time() + LIBRARIAN_MAX_SECONDS
+        while True:
+            _, res = http(
+                "GET",
+                f"{base}/jobs/{urllib.parse.quote(job)}/result?timeout_s=30",
+                timeout=45,
+            )
+            state = res.get("state") if isinstance(res, dict) else None
+            if state in ("done", "failed", "cancelled"):
+                break
+            if time.time() > deadline:
+                die("librarian query did not finish in time")
+    except HttpError as e:
+        die(f"librarian refused: {e}")
+    except OSError as e:
+        die(f"librarian unreachable at {base}: {type(e).__name__}")
+    result = res.get("result") or {}
+    if state != "done" or result.get("exit_code") != 0:
+        die(f"librarian query {state} (exit {result.get('exit_code')})")
+    try:
+        stdout = base64.b64decode(result.get("stdout") or "").decode("utf-8", "replace")
+    except ValueError:
+        die("librarian stdout is not base64")
+    return parse_hits(stdout)
+
+
+# ---------------------------------------------------------------- board
+
+
+def ask_title(question):
+    flat = " ".join(question.split())
+    return "Ask: " + flat[:TITLE_MAX]
+
+
+class Board:
+    def __init__(self, api, key):
+        self.api = api.rstrip("/")
+        self.key = key
+
+    def get(self, path):
+        try:
+            _, body = http("GET", self.api + path, headers={"Authorization": f"Bearer {self.key}"})
+            return body
+        except HttpError as e:
+            die(f"board GET {path.split('?')[0]} refused: HTTP {e.status}")
+        except OSError as e:
+            die(f"board unreachable at {self.api}: {type(e).__name__}")
+
+
+def company_id():
+    cid = os.environ.get("PAPERCLIP_COMPANY_ID")
+    if not cid:
+        die("set PAPERCLIP_COMPANY_ID")
+    return cid
+
+
+def assignee_id(board, cid):
+    """ASK_ASSIGNEE_AGENT_ID, else the company agent named Nagatha. Agent-
+    readable endpoints only: an agent key gets 403 on /api/plugins/..."""
+    aid = os.environ.get("ASK_ASSIGNEE_AGENT_ID")
+    if aid:
+        return aid
+    url = f"{board.api}/api/companies/{urllib.parse.quote(cid)}/agents"
+    try:
+        _, agents = http("GET", url, headers={"Authorization": f"Bearer {board.key}"})
+    except (HttpError, OSError):
+        agents = None
+    for a in agents if isinstance(agents, list) else []:
+        if isinstance(a, dict) and a.get("name") == "Nagatha" and a.get("id"):
+            return a.get("id")
+    die("set ASK_ASSIGNEE_AGENT_ID")
+
+
+def open_asks(board, cid, aid, question):
+    """Every Ask: issue for this question, closed ones too: she may have
+    answered and closed it before the first lookup."""
+    title = ask_title(question)
+    want = question.strip()
+    found = []
+    for status in LIST_STATUSES:
+        q = urllib.parse.urlencode(
+            {"assigneeAgentId": aid, "status": status, "limit": 100}
+        )
+        rows = board.get(f"/api/companies/{urllib.parse.quote(cid)}/issues?{q}")
+        for i in rows if isinstance(rows, list) else []:
+            if (
+                isinstance(i, dict)
+                and i.get("title") == title
+                and want in str(i.get("description") or "")
+            ):
+                found.append(i)
+    return found
+
+
+def token():
+    t = os.environ.get("ASK_TOKEN")
+    if not t:
+        path = os.environ.get("ASK_TOKEN_FILE") or os.path.expanduser("~/.config/fleet/ask-token")
+        try:
+            with open(path, encoding="utf-8") as f:
+                t = f.read().strip()
+        except OSError:
+            die(f"no ask token: set ASK_TOKEN or put it in {path}")
+    if not t:
+        die("the ask token is empty")
+    SECRETS.append(t)
+    return t
+
+
+def issue_link(issue):
+    ui = (os.environ.get("PAPERCLIP_UI_URL") or os.environ.get("PAPERCLIP_API_URL") or "http://10.0.20.105:3100").rstrip("/")
+    ident = issue.get("identifier") or issue.get("id")
+    prefix = str(ident).split("-", 1)[0] if issue.get("identifier") else ""
+    return f"{ui}/{prefix}/issues/{ident}" if prefix else f"{ui}/issues/{ident}"
+
+
+def escalate(question, hits, args, poll):
+    api = os.environ.get("PAPERCLIP_API_URL") or "http://10.0.20.105:3100"
+    key = os.environ.get("PAPERCLIP_API_KEY") or os.environ.get("PAPERCLIP_BOARD_TOKEN")
+    if not key:
+        die("no board key: set PAPERCLIP_API_KEY or PAPERCLIP_BOARD_TOKEN")
+    SECRETS.append(key)
+    tok = token()
+    board = Board(api, key)
+
+    cid = company_id()
+    hook = os.environ.get("ASK_WEBHOOK_URL") or f"{board.api}/api/plugins/{PLUGIN_KEY}/webhooks/{ENDPOINT_KEY}"
+    aid = assignee_id(board, cid)
+
+    before = {i.get("id") for i in open_asks(board, cid, aid, question)}
+    payload = {
+        "question": question,
+        "asker": args.asker,
+        "hits": [
+            {k: v for k, v in (("path", h["path"]), ("line", h["line"]), ("snippet", h["snippet"][:500])) if v}
+            for h in hits[:20]
+            if h["path"]
+        ],
+    }
+    try:
+        _, ack = http("POST", hook, payload, headers={"X-Ask-Token": tok, "X-Ask-Company": cid}, timeout=30)
+    except HttpError as e:
+        detail = e.body
+        try:
+            detail = json.loads(e.body).get("error") or e.body
+        except (ValueError, AttributeError):
+            pass
+        die(f"ask webhook refused: HTTP {e.status}: {str(detail)[:200]}")
+    except OSError as e:
+        die(f"ask webhook unreachable: {type(e).__name__}")
+
+    issue = None
+    deadline = time.time() + min(FIND_SECONDS, max(args.timeout, 1))
+    while issue is None:
+        fresh = [i for i in open_asks(board, cid, aid, question) if i.get("id") not in before]
+        if fresh:
+            fresh.sort(key=lambda i: str(i.get("createdAt") or ""), reverse=True)
+            issue = fresh[0]
+            break
+        if time.time() > deadline:
+            delivery = ack.get("deliveryId") if isinstance(ack, dict) else None
+            die(f"webhook accepted (delivery {delivery}) but no Ask: issue appeared")
+        time.sleep(min(poll, 2))
+
+    link = issue_link(issue)
+    ref = {"id": issue.get("id"), "identifier": issue.get("identifier"), "url": link}
+    if args.no_wait:
+        return {"answered_by": None, "answer": None, "citations": [], "issue": ref}, 0
+
+    end = time.time() + args.timeout
+    path = f"/api/issues/{urllib.parse.quote(str(issue.get('id')))}/comments?order=asc"
+    while True:
+        comments = board.get(path)
+        for c in comments if isinstance(comments, list) else []:
+            body = str((c or {}).get("body") or "")
+            if (c or {}).get("authorAgentId") == aid and body.lstrip().startswith("ANSWER:"):
+                cites = sorted(set(m for m in CITE_RE.findall(body) if "/" in m))
+                return {"answered_by": "nagatha", "answer": body, "citations": cites, "issue": ref}, 0
+        if time.time() >= end:
+            return {"answered_by": None, "answer": None, "citations": [], "issue": ref}, 3
+        time.sleep(min(poll, max(end - time.time(), 0.05)))
+
+
+# ---------------------------------------------------------------- output
+
+
+def render(result, code, as_json):
+    if as_json:
+        print(json.dumps(result))
+        return
+    issue = result.get("issue")
+    who = result.get("answered_by")
+    if who == "librarian":
+        print("answered_by: librarian")
+        for c in result["citations"]:
+            print(f"- {c}")
+        print()
+        print(result["answer"])
+    elif who == "nagatha":
+        print(f"answered_by: nagatha  ({issue['identifier']} {issue['url']})")
+        print()
+        print(result["answer"])
+    elif code == 3:
+        print(f"timed out waiting for Nagatha: {issue['identifier']} {issue['url']}")
+    else:
+        print(f"filed for Nagatha: {issue['identifier']} {issue['url']}")
+
+
+def librarian_answer(hits):
+    lines = []
+    for h in hits[:5]:
+        head = f"{h['citation']}  (score {h['score']:.2f})"
+        if h["title"]:
+            head += f"  {h['title']}"
+        lines.append(head)
+        snippet = "\n".join(
+            "    " + l for l in h["snippet"].splitlines() if l and not l.startswith("@@")
+        )
+        if snippet:
+            lines.append(snippet)
+    return "\n".join(lines)
+
+
+def main(argv):
+    p = argparse.ArgumentParser(prog="ask-nagatha", description="Ask Nagatha an infra question.")
+    p.add_argument("question", nargs="+")
+    p.add_argument("--direct", action="store_true", help="skip the librarian")
+    p.add_argument("--librarian-only", action="store_true", help="print canon hits only; do not ask Nagatha")
+    p.add_argument("--no-wait", action="store_true", help="print the issue and exit")
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--asker", default=None)
+    args = p.parse_args(argv)
+    question = " ".join(args.question).strip()
+    if not question:
+        p.error("the question is empty")
+    if len(question) > QUESTION_MAX:
+        p.error(f"the question is longer than {QUESTION_MAX} characters")
+    if args.timeout <= 0:
+        p.error("--timeout must be positive")
+    if not args.asker:
+        try:
+            user = getpass.getuser()
+        except Exception:
+            user = "unknown"
+        args.asker = f"{user}@{socket.gethostname()}"
+    try:
+        poll = float(os.environ.get("ASK_POLL_SECONDS") or 5)
+    except ValueError:
+        poll = 5.0
+
+    if args.direct and args.librarian_only:
+        p.error("--direct and --librarian-only exclude each other")
+    hits = []
+    if not args.direct:
+        base = (os.environ.get("LIBRARIAN_URL") or "http://10.0.1.20:7141").rstrip("/")
+        hits = ask_librarian(base, question)
+        if args.librarian_only:
+            result = {
+                "answered_by": "librarian",
+                "answer": librarian_answer(hits),
+                "citations": [h["citation"] for h in hits[:5]],
+                "issue": None,
+            }
+            render(result, 0, args.json)
+            return 0
+
+    result, code = escalate(question, hits, args, poll)
+    render(result, code, args.json)
+    return code
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)

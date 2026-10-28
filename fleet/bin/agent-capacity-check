@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""agent-capacity-check: refuse a board roster whose run capacity is unbounded
+(IMPLEMENTATION S1.2; W1a F1/F2/F7/F11). Paperclip has no company-wide run
+cap: total load is the sum of every agent's heartbeat.maxConcurrentRuns, so
+this check holds that sum to the company cap.
+
+Usage: agent-capacity-check [--file <agents.json>] [--cap <n>]
+
+Every agent in the file must carry three integer fields:
+  maxConcurrentRuns  0..5 (DESIGN: 1-5, raised 2026-10-07, sf#1730 review capacity); 0 = no slot, the seat stays paused
+  timeoutSec         60..3600 (adapterConfig, per-run wall clock)
+  graceSec           1..300, below timeoutSec (adapterConfig, kill grace)
+Seats carry no daily caps (sf#1857, Rico 2026-10-07: spend is measured, never
+capped): maxDailyCostCents is refused on any seat and maxDailyRuns on a seat
+with a slot. A 0-slot seat must carry maxDailyRuns exactly 0, its off switch
+next to the pause (the board's slot floor is 1, W1a F1), not a budget.
+the sum of maxConcurrentRuns must be at most --cap (default 44), and no key or
+name may appear twice.
+
+Exit: 0 ok; 1 refused (one `agent-capacity-check: <reason>` line each on
+stderr); 2 bad usage or unreadable file.
+"""
+import argparse
+import json
+import os
+import sys
+
+DEFAULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "board", "agents.json")
+TIMEOUT_MAX = 3600
+PER_AGENT_MAX = 5
+
+
+def ranges(slots):
+    """{field: (min, max)} for the required fields. A 0-slot seat runs 0 times a day."""
+    out = {"maxConcurrentRuns": (0, PER_AGENT_MAX)}
+    if slots == 0:
+        out["maxDailyRuns"] = (0, 0)
+    out["timeoutSec"] = (60, TIMEOUT_MAX)
+    out["graceSec"] = (1, 300)
+    return out
+
+
+# Fields no seat may carry, by whether it has a slot (sf#1857).
+def forbidden(slots):
+    return ["maxDailyCostCents"] if slots == 0 else ["maxDailyRuns", "maxDailyCostCents"]
+
+
+class Pairs(list):
+    """A JSON object as its (key, value) pairs, so a duplicate key is not silently dropped."""
+
+
+def problems(items, cap):
+    out = []
+    total = 0
+    keys, names = set(), set()
+    for key, spec in items:
+        if key in keys:
+            out.append(f"duplicate key {key}")
+        keys.add(key)
+        if not isinstance(spec, Pairs):
+            out.append(f"{key}: not an object")
+            continue
+        spec = dict(spec)
+        name = spec.get("name")
+        if not isinstance(name, str):
+            out.append(f"{key}: name is not a string")
+        else:
+            if name in names:
+                out.append(f"{key}: duplicate name {name}")
+            names.add(name)
+        slots = spec.get("maxConcurrentRuns")
+        for field in forbidden(slots):
+            if field in spec:
+                out.append(f"{key}: {field} is set; daily caps are not used (sf#1857)")
+        for field, (lo, hi) in ranges(slots).items():
+            value = spec.get(field)
+            if value is None:
+                out.append(f"{key}: missing {field}")
+            elif type(value) is not int:
+                out.append(f"{key}: {field} is not an integer: {value!r}")
+            elif field == "maxDailyRuns" and hi == 0 and value != 0:
+                out.append(f"{key}: 0 slots needs maxDailyRuns 0, has {value}")
+            elif value < lo or (hi is not None and value > hi):
+                bound = f"{lo}..{hi}" if hi is not None else f">= {lo}"
+                out.append(f"{key}: {field} {value} out of range {bound}")
+        grace, timeout = spec.get("graceSec"), spec.get("timeoutSec")
+        if type(grace) is int and type(timeout) is int and grace >= timeout:
+            out.append(f"{key}: graceSec {grace} is not below timeoutSec {timeout}")
+        if type(spec.get("maxConcurrentRuns")) is int:
+            total += spec["maxConcurrentRuns"]
+    if total > cap:
+        out.append(f"sum of maxConcurrentRuns is {total}, above the cap {cap}")
+    return out, total
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="agent-capacity-check")
+    ap.add_argument("--file", default=DEFAULT_FILE)
+    ap.add_argument("--cap", type=int, default=44)
+    args = ap.parse_args()
+    try:
+        with open(args.file, encoding="utf-8") as f:
+            agents = json.load(f, object_pairs_hook=Pairs)
+    except (OSError, ValueError) as e:
+        sys.stderr.write(f"agent-capacity-check: cannot read {args.file}: {e}\n")
+        sys.exit(2)
+    if not isinstance(agents, Pairs) or not agents:
+        sys.stderr.write(f"agent-capacity-check: {args.file} holds no agents\n")
+        sys.exit(2)
+    found, total = problems(agents, args.cap)
+    for p in found:
+        sys.stderr.write(f"agent-capacity-check: {p}\n")
+    if found:
+        sys.exit(1)
+    print(f"agent-capacity-check: ok, {len(agents)} agents, {total} of {args.cap} concurrent slots")
+
+
+if __name__ == "__main__":
+    main()

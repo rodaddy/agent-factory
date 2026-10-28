@@ -1,0 +1,22 @@
+export declare function ensureCommandResolvable(command: string, cwd: string, env: NodeJS.ProcessEnv, options?: {
+    remoteExecution?: RemoteExecutionSpec | null;
+}): Promise<void>;
+export declare function runChildProcess(runId: string, command: string, args: string[], opts: {
+    cwd: string;
+    env: Record<string, string>;
+    timeoutSec: number;
+    graceSec: number;
+    onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    onLogError?: (err: unknown, runId: string, message: string) => void;
+    onSpawn?: (meta: {
+        pid: number;
+        processGroupId: number | null;
+        startedAt: string;
+    }) => Promise<void>;
+    terminalResultCleanup?: TerminalResultCleanupOptions;
+    stdin?: string;
+    remoteExecution?: RemoteExecutionSpec | null;
+    localProcessSandbox?: LocalProcessSandboxOptions | null;
+}): Promise<RunProcessResult>;
+export {};
+//# sourceMappingURL=server-utils.d.ts.map

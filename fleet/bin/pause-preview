@@ -1,0 +1,56 @@
+#!/usr/bin/env bun
+/**
+ * pause-preview: what pausing a seat would strand. Read-only (GET).
+ * A `todo` issue with a queued or scheduled_retry run is blocked at once by a
+ * pause (server policy.js:196-208: the run is cancelled `agent_paused`, since
+ * heartbeat.js CANCELLABLE_HEARTBEAT_RUN_STATUSES covers queued, running and
+ * scheduled_retry, and recovery escalates the issue to `blocked`), and nothing
+ * re-drives it after resume.
+ *
+ * Usage: pause-preview <seat>
+ * Stdout: `todo <issue> <title> [queued=<runs>] [retry=<runs>]` per todo issue
+ * with a queued or scheduled_retry run (each todo issue once, either list
+ * printed only when it has runs),
+ * `in_progress <issue> <title>` per in-progress issue, `running <run>
+ * issue=<id>` per running run, then `pausing <seat> strands N todo tasks`.
+ * Env: as seat-lib.ts. Exit: 0 printed | 1 API error or unknown seat | 3 usage.
+ */
+import { requireEnv, runIssue, seatId, seatIssues, seatRuns } from "./seat-lib.ts";
+
+const USAGE = "usage: pause-preview <seat>";
+const seat = process.argv[2];
+if (!seat || process.argv.length !== 3) {
+	console.error(USAGE);
+	process.exit(3);
+}
+requireEnv("pause-preview", USAGE);
+
+async function main(): Promise<void> {
+	const agentId = await seatId(seat as string);
+	const runs = await seatRuns("pause-preview", agentId);
+	const ofIssue = (status: string, id: string) =>
+		runs.filter((r) => r.status === status && runIssue(r) === id).map((r) => r.id);
+	let stranded = 0;
+	for (const issue of await seatIssues(agentId, "todo")) {
+		const queued = ofIssue("queued", issue.id);
+		const retry = ofIssue("scheduled_retry", issue.id);
+		if (!queued.length && !retry.length) continue;
+		stranded++;
+		const at = [queued.length && `queued=${queued.join(",")}`, retry.length && `retry=${retry.join(",")}`];
+		console.log(`todo ${issue.identifier ?? issue.id} ${issue.title ?? ""} ${at.filter(Boolean).join(" ")}`);
+	}
+	for (const issue of await seatIssues(agentId, "in_progress")) {
+		console.log(`in_progress ${issue.identifier ?? issue.id} ${issue.title ?? ""}`);
+	}
+	for (const run of runs.filter((r) => r.status === "running")) {
+		console.log(`running ${run.id} issue=${runIssue(run) ?? "-"}`);
+	}
+	console.log(`pausing ${seat} strands ${stranded} todo tasks`);
+}
+
+try {
+	await main();
+} catch (e) {
+	console.error(`pause-preview: ${(e as Error).message.split("\n")[0]}`);
+	process.exit(1);
+}

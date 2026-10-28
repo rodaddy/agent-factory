@@ -1,0 +1,692 @@
+#!/opt/homebrew/opt/node@24/bin/node
+// forge: one CLI for every Forge (Forgejo) call, as the session's own harness account, so token
+// handling, the PR bar and the CI verdict live in one place. https://forge.example.internal/rodaddy/development/issues/979
+// Token: the sibling forgejo-<harness>-session-token's stdout, fetched once on the first request, used
+// in a request header in this process only: never argv, never printed, redacted from every error.
+// Identity: --as wins; else a Paperclip employee when FORGE_LOGIN and FORGEJO_TOKEN are both set
+// (that token, no script; development#992); else RTECH_HARNESS, then CLAUDECODE=1.
+// --elevated, first argument only: Claude's site-admin claude-elevated
+// account, via the sibling forgejo-claude-elevated-token.
+
+import { spawnSync } from "node:child_process";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
+const OP = await import(pathToFileURL(join(HERE, "forge-op.mjs")).href);
+const { Usage, Http } = OP;
+const XV = (await import(pathToFileURL(join(HERE, "forge-verbs.mjs")).href)).verbs({ request, show, positionals, num, target, bodyOf,
+	segments: OP.segments, Usage });
+const SV = (await import(pathToFileURL(join(HERE, "forge-secrets.mjs")).href)).secrets({ request, show, positionals, Usage });
+const RL = (await import(pathToFileURL(join(HERE, "forge-review-labels.mjs")).href)).reviewLabels({ request, allLabels });
+export const API = OP.API;
+const HARNESSES = new Set(["claude", "codex", "pi"]);
+const METHODS = new Set(["GET", "POST", "PATCH", "PUT", "DELETE"]);
+const EVENTS = { approve: "APPROVED", "request-changes": "REQUEST_CHANGES", comment: "COMMENT" };
+const STYLES = new Set(["squash", "merge", "rebase"]);
+const PIPE = ["ignore", "pipe", "pipe"];
+const MERGE_WAITS = [2, 4, 8, 8, 8];
+const ELEVATED = "claude-elevated";
+const NOT_FIRST = "--elevated must be the first argument";
+
+export const USAGE = `usage: forge [--elevated | --as claude|codex|pi] [--json] <verb> [<sub>] [args]
+  whoami
+  pr view <repo> <n>
+  pr list <repo> [--state open|closed|all] [--limit N]
+  pr body --issue <url|owner/repo#n> --seat <seat> --model <id> [--base main] [--head <branch>]
+  pr create <forge-pr-open args...>
+  pr merge <repo> <n> --sha <head-sha> [--style squash|merge|rebase] [--delete-branch]
+  pr retarget <repo> <n> <base>
+  pr edit <repo> <n> [--title t] [--body t | --body-file f]
+  pr close|reopen <repo> <n>
+  pr comment <repo> <n> --body t | --body-file f
+  pr review <repo> <n> --event approve|request-changes|comment [--body t | --body-file f]
+  pr reviews <repo> <n>
+  pr files <repo> <n>
+  pr check <repo> <n> [--ci-paths <regex>]
+  run list <repo> [--status S[,S]] [--limit N]
+  run view <repo> <run-id>
+  run log <repo> <job-id> [--tail N]
+  run wait <repo> <sha> [<repo> <sha>]... [--timeout <minutes>] [--interval <seconds>]
+  comment view <repo> <comment-id>
+  comment edit <repo> <comment-id> --body t | --body-file f
+  repo view <repo>
+  repo search <word> [--limit N]
+  branch list <repo> [--limit N]
+  branch view|delete <repo> <name>
+  branch create <repo> <name> [--from <ref>]
+  secret list <repo|org:name>
+  secret set <repo|org:name> <NAME> --value-file <path|->
+  secret delete <repo|org:name> <NAME>
+  status <repo> <ref> [--contexts]
+  api GET|POST|PATCH|PUT|DELETE <path> [--data-file f]
+  find <word>... [--refresh] [--version] [--json]
+  op <operationId> [key=value | body.key=value | key:=<json>]... [--data-file f] [--b64 field=path]... [--file field=path]... [--form field=value]... [--out p|-] [--range a-b] [--anon] [--all-pages] [--raw] [--help]
+  issue view <repo> <n>
+  issue list <repo> [--state open|closed|all] [--label L]... [--limit N]
+  issue create <repo> --title t (--body t | --body-file f) [--label L]...
+  issue edit <repo> <n> [--title t] [--body t | --body-file f]
+  issue comment <repo> <n> --body t | --body-file f
+  issue close <repo> <n> [--body t | --body-file f]
+  issue reopen <repo> <n>
+  comments <repo> <n>
+  label list <repo>
+  label add|remove <repo> <n> <name>...
+<repo> is owner/repo or . (the cwd checkout's origin). --body-file - reads stdin.
+Exit: 0 ok; 1 Forge answered HTTP >= 400; 3 usage, token, network or unreadable
+response. status: 0 success, 1 failure, 2 pending, 4 no runner, 5 no status, 3 else.
+run wait: 0 all green, 1 any failed, 2 timed out.`;
+
+const VALUED = new Set(["--body", "--body-file", "--title", "--state", "--limit", "--sha", "--style", "--event",
+	"--data-file", "--label", "--issue", "--seat", "--model", "--base", "--head", "--as", "--status", "--tail", "--from",
+	"--timeout", "--interval", "--ci-paths", "--value-file"]);
+const FLAGGY = new Set([...VALUED, "--delete-branch", "--json"]);
+const BODY = "body body-file";
+/** The flags each verb reads; any other flag is a usage error, never silently ignored. */
+const FLAGS = { "pr body": "issue seat model base head", "pr list": "state limit", "pr merge": "sha style delete-branch",
+	"pr edit": `title ${BODY}`, "pr comment": BODY, "pr review": `event ${BODY}`, "issue list": "state label limit",
+	"issue create": `title label ${BODY}`, "issue edit": `title ${BODY}`, "issue comment": BODY, "issue close": BODY,
+	api: "data-file", "run list": "status limit", "run log": "tail", "comment edit": BODY, "repo search": "limit",
+	"branch list": "limit", "branch create": "from",
+	"run wait": "timeout interval", "pr check": "ci-paths", "secret set": "value-file" };
+
+/** A verb's args: positionals in `_`, `--flag value` by name once, `--label` repeatable; `allowed` flags only. */
+export function parseVerbArgs(args, allowed = "") {
+	const o = { _: [], label: [] };
+	const ok = new Set(allowed.split(" "));
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i];
+		if (a.startsWith("--") && a.length > 2 && !ok.has(a.slice(2))) throw new Usage(`unknown flag '${a}'`);
+		if (a === "--delete-branch") o["delete-branch"] = true;
+		else if (VALUED.has(a)) {
+			if (i + 1 >= args.length || FLAGGY.has(args[i + 1])) throw new Usage(`${a} needs a value`);
+			if (a === "--label") o.label.push(args[++i]);
+			else if (Object.hasOwn(o, a.slice(2))) throw new Usage(`${a} given twice`);
+			else o[a.slice(2)] = args[++i];
+		} else o._.push(a);
+	}
+	return o;
+}
+
+function positionals(o, names) {
+	const want = names.map((n) => `<${n}>`).join(" ");
+	if (o._.length !== names.length) throw new Usage(`expected ${want}, got ${o._.length} argument(s)`);
+	return o._;
+}
+
+// The digits themselves: Number() would print a long one as 1e+21.
+function num(s) {
+	if (!/^[1-9]\d*$/.test(s)) throw new Usage(`expected a positive integer, got '${s}'`);
+	return s;
+}
+
+export function resolveRepo(s, cwd) {
+	let slug = s;
+	if (s === ".") {
+		const g = spawnSync("git", ["remote", "get-url", "origin"], { cwd, encoding: "utf8", stdio: PIPE });
+		if (g.status !== 0) throw new Usage(`no git origin in '${cwd}'`);
+		const origin = g.stdout.trim();
+		// Some child repos still carry the raw-IP Forge origin (the same server).
+		const m = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?(?:forge\.example\.internal|10\.0\.20\.58:3000)[:/](.*)$/.exec(origin);
+		if (!m) throw new Usage(`origin is not a Forge remote: ${origin.replace(/\/\/[^@/]*@/, "//")}`);
+		slug = m[1].replace(/\.git$/, "");
+	}
+	if (!/^[\w.-]+\/[\w.-]+$/.test(slug) || /(^|\/)\.\.?(\/|$)/.test(slug)) throw new Usage(`<repo> must be owner/repo or ., got '${s}'`);
+	return slug;
+}
+
+function readText(path) {
+	try {
+		return readFileSync(path === "-" ? 0 : path, "utf8");
+	} catch (err) {
+		throw new Usage(`cannot read ${path === "-" ? "stdin" : path}: ${err?.code ?? "error"}`);
+	}
+}
+
+const parseJson = (text) => { try { return JSON.parse(text); } catch { return undefined; } };
+
+/** The body text; an empty --body-file (a failed pipe), or an empty required body, is a usage error. */
+function bodyOf(ctx, o, required) {
+	const file = o["body-file"];
+	if (o.body !== undefined && file !== undefined) throw new Usage("pass --body or --body-file, not both");
+	const body = file === undefined ? o.body : ctx.readText(file);
+	if (body === undefined && required) throw new Usage("a body is required: --body <text> or --body-file <path>");
+	if (body !== undefined && !body.trim() && (required || file !== undefined)) {
+		throw new Usage(`the body is empty (${file === undefined ? "--body" : `--body-file ${file}`})`);
+	}
+	return body;
+}
+
+const envHarness = (env) => (HARNESSES.has(env.RTECH_HARNESS) ? env.RTECH_HARNESS : env.CLAUDECODE === "1" ? "claude" : undefined);
+
+export function harnessOf(flag, env) {
+	const h = flag ?? envHarness(env);
+	if (h === undefined) throw new Usage("cannot tell which harness this is: pass --as claude|codex|pi");
+	if (!HARNESSES.has(h)) throw new Usage(`--as must be claude, codex or pi, got '${h}'`);
+	return h;
+}
+
+/** The employee login when no --as was given and FORGE_LOGIN and FORGEJO_TOKEN are both non-empty. */
+export const employeeOf = (flag, env) => (flag === undefined && env.FORGE_LOGIN && env.FORGEJO_TOKEN ? env.FORGE_LOGIN : undefined);
+
+export function scriptToken(harness, dir = HERE) {
+	const name = harness === ELEVATED ? "forgejo-claude-elevated-token" : `forgejo-${harness}-session-token`;
+	const r = spawnSync(join(dir, name), [], { encoding: "utf8", timeout: 60_000, stdio: PIPE });
+	if (harness === ELEVATED && r.error?.code === "ENOENT") throw new Error(`${name} is missing: the elevated account is not set up`);
+	if (r.status !== 0) throw new Error(`${name} exit ${r.status ?? r.error?.code ?? r.signal ?? "unknown"}`);
+	const t = r.stdout.trim();
+	if (!t) throw new Error(`${name} printed nothing`);
+	if (/\s/.test(t)) throw new Error(`${name} printed more than one word`);
+	return t;
+}
+
+/** --elevated: no --as, no employee, a Claude session only; one stderr line before any request. */
+function elevate(ctx, env) {
+	if (ctx.as !== undefined) throw new Usage("--elevated cannot combine with --as");
+	if (employeeOf(undefined, env) || envHarness(env) !== "claude") throw new Usage("--elevated is for Claude sessions only");
+	ctx.stderr(`forge: ELEVATED as ${ELEVATED} (Rico-approved call)`);
+}
+
+const WRITES = new Set(["POST", "PATCH", "PUT"]);
+const shapeOf = (json) => (Array.isArray(json) ? "array" : typeof json);
+
+/** `expect`: the JSON shape a success must have; a write defaults to an object, so a reply of another
+ * shape (a list from a write turned GET) is exit 3, never a printed `undefined`. A same-origin 3xx is
+ * re-sent with the same method and body (forge-op's moved()), one stderr line per hop. */
+async function request(ctx, method, path, body, { text: allowText = false, expect = WRITES.has(method) ? "object" : "any" } = {}) {
+	const headers = { authorization: `token ${await ctx.token()}`, accept: "application/json" };
+	if (body !== undefined) headers["content-type"] = "application/json";
+	if (body !== undefined && typeof body !== "string") body = JSON.stringify(body);
+	let res, text;
+	for (let hop = 0; ; hop++) {
+		try {
+			res = await ctx.fetch(`${API}${path}`, { method, headers, body, redirect: "manual", signal: AbortSignal.timeout(30_000) });
+			text = await res.text();
+		} catch (err) {
+			throw new Error(`${method} ${path}: ${err?.cause?.code ?? err?.name ?? "network error"}`);
+		}
+		if (!OP.MOVED.has(res.status)) break;
+		const to = OP.moved(method, path, res.status, res.headers.get("location"), hop);
+		ctx.stderr(`forge: ${method} ${path} moved to ${to}; use the new name`);
+		path = to;
+		// 303 See Other means fetch the result with a GET; every other 3xx keeps the method and body.
+		if (res.status === 303) {
+			method = "GET";
+			body = undefined;
+			delete headers["content-type"];
+		}
+	}
+	const json = text.trim() ? parseJson(text) : null;
+	// An empty body is null; a non-JSON error page has nothing worth reading; a non-JSON success is
+	// unreadable, except for `api`, where raw files and diffs come back as text.
+	if (json === undefined && res.status < 400) {
+		if (allowText) return text;
+		throw new Error(`${method} ${path}: unreadable response`);
+	}
+	const msg = `${method} ${path}: HTTP ${res.status}${json?.message ? ` -- ${json.message}` : ""}`;
+	if (res.status >= 400) throw Object.assign(new Http(msg), { status: res.status });
+	if (expect !== "any" && json !== null && shapeOf(json) !== expect) {
+		throw new Error(`${method} ${path}: unexpected response shape (${shapeOf(json)})`);
+	}
+	return json;
+}
+
+function show(ctx, json, human, code = 0) {
+	let lines;
+	try {
+		lines = ctx.json ? [] : [human(json)].flat();
+	} catch (err) {
+		throw new Error(`unreadable response: ${err.message}`);
+	}
+	for (const line of lines) ctx.stdout(line);
+	if (ctx.json && json !== null) ctx.stdout(JSON.stringify(json, null, 2));
+	return code;
+}
+const send = async (ctx, method, path, human, body) => show(ctx, await request(ctx, method, path, body), human);
+
+/** [line, exit] for a combined-status response: a port of _ob/bin/forge-status, over EVERY status. */
+export function classify(ref, s) {
+	const r7 = String(ref).slice(0, 7);
+	const descs = (s.statuses ?? []).map((x) => x?.description ?? "");
+	const first = descs[0] ?? "";
+	if (!s.total_count) return [`${r7} NO-STATUS -- no workflow triggered for this commit`, 5];
+	const fail = descs.find((d) => d.startsWith("Failing"));
+	if (fail !== undefined) return [`${r7} FAILURE -- ${fail}`, 1];
+	const pend = descs.find((d) => d === "Waiting to run" || d === "Has started running");
+	if (pend !== undefined) return [`${r7} PENDING -- ${pend}`, 2];
+	const cancelled = descs.length && descs.every((d) => d === "Has been cancelled");
+	if (cancelled) return [`${r7} NO-RUNNER -- Has been cancelled (NO RUNNER PICKED THIS UP, not a code failure)`, 4];
+	if (s.state === "success") return [`${r7} SUCCESS -- ${first}`, 0];
+	if (s.state === "failure" || s.state === "error") return [`${r7} FAILURE -- ${first}`, 1];
+	return [`${r7} PENDING -- state=${s.state} ${first}`, 2];
+}
+
+const CI_PATHS = "^(\\.forgejo/|\\.github/|\\.gitea/|scripts/ci/)";
+const PAGE = 50;
+const MAX_PAGES = 20;
+const time = (c) => Date.parse(c?.updated_at) || 0;
+
+/** The latest status per context (greatest updated_at, ties to the greater id), sorted by context. */
+export function latestContexts(statuses) {
+	const by = new Map();
+	for (const c of statuses ?? []) {
+		const old = by.get(c.context);
+		if (!old || time(c) > time(old) || (time(c) === time(old) && c.id > old.id)) by.set(c.context, c);
+	}
+	return [...by.values()].sort((a, b) => (a.context < b.context ? -1 : a.context > b.context ? 1 : 0));
+}
+
+/** A read that ended on a full page at MAX_PAGES is partial; a verdict over it would be a guess. */
+const truncated = (what) => new Error(`${what}: more than ${PAGE * MAX_PAGES} records; refusing a partial verdict`);
+
+/** The latest-per-context statuses of a ref, page by page until a short page; a full MAX_PAGES is an error. */
+async function contextsOf(ctx, repo, ref) {
+	const all = [];
+	const path = `/repos/${repo}/commits/${OP.segments("ref", ref, true)}/statuses`;
+	let got = [];
+	for (let page = 1; page === 1 || (got.length === PAGE && page <= MAX_PAGES); page++) {
+		got = (await request(ctx, "GET", `${path}?page=${page}&limit=${PAGE}`)) ?? [];
+		if (!Array.isArray(got)) throw new Error(`statuses ${ref}: unreadable response`);
+		all.push(...got);
+	}
+	if (got.length === PAGE) throw truncated(`statuses ${ref}`);
+	return latestContexts(all);
+}
+
+const contextLine = (c) => `${c.status} ${c.context} ${c.updated_at} ${c.target_url ?? ""}`;
+/** 1 any failure or error; 2 anything else not success (pending, warning); 0 all success; 5 none. */
+const contextsExit = (cs) => (!cs.length ? 5 : cs.some((c) => c.status === "failure" || c.status === "error") ? 1
+	: cs.every((c) => c.status === "success" || c.status === "skipped") ? 0 : 2);
+
+function target(ctx, o, more = []) {
+	const [r, n, ...rest] = positionals(o, ["repo", "n", ...more]);
+	return [ctx.repo(r), num(n), ...rest];
+}
+
+function listArgs(ctx, o) {
+	const [r] = positionals(o, ["repo"]);
+	const state = o.state ?? "open";
+	if (!["open", "closed", "all"].includes(state)) throw new Usage(`--state must be open, closed or all, got '${state}'`);
+	return [state, o.limit === undefined ? 30 : num(o.limit), ctx.repo(r)];
+}
+
+// An issue close with a body posts the comment first, then PATCHes the state.
+const setState = (state, kind = "pulls", comment = false) => async (ctx, o) => {
+	const [repo, n] = target(ctx, o);
+	const body = comment ? bodyOf(ctx, o, false) : undefined;
+	if (body !== undefined) await request(ctx, "POST", `/repos/${repo}/issues/${n}/comments`, { body });
+	return send(ctx, "PATCH", `/repos/${repo}/${kind}/${n}`, (x) => `${x.html_url} ${x.state}`, { state });
+};
+
+/** `check(ctx, repo, n, body)`: problems that refuse the edit, one stderr line each, exit 1. */
+const editFields = (kind, noun, check) => async (ctx, o) => {
+	const [repo, n] = target(ctx, o);
+	const fields = { title: o.title, body: bodyOf(ctx, o, false) };
+	if (fields.title === undefined && fields.body === undefined) throw new Usage(`${noun} edit needs --title or a body`);
+	const problems = check ? await check(ctx, repo, n, fields.body) : [];
+	if (problems.length) return (problems.forEach((p) => ctx.stderr(`forge: ${p}`)), 1);
+	return send(ctx, "PATCH", `/repos/${repo}/${kind}/${n}`, (x) => x.html_url, fields);
+};
+
+/**
+ * A new PR body keeps forge-pr-open's Local review bar: its shape, then its
+ * receipt against the PR's head and base. A Paperclip employee is refused: employees do not edit PR
+ * bodies, as forge-pr-open refuses their PRs.
+ */
+async function prBodyCheck(ctx, repo, n, body) {
+	if (body === undefined) return [];
+	if (ctx.employee() !== undefined) return ["Paperclip employees do not edit PR bodies (operator ruling 2026-10-08)"];
+	const bar = await import(pathToFileURL(join(HERE, "forge-pr-open")).href);
+	const { problems, receipt } = bar.localReviewShape(body);
+	if (receipt === undefined) return problems;
+	const pr = await request(ctx, "GET", `/repos/${repo}/pulls/${n}`);
+	// The receipt is checked against the PR head in this checkout; without that commit every check misleads.
+	const sha = pr?.head?.sha;
+	if (!sha || spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: ctx.cwd, stdio: "ignore" }).status !== 0) {
+		return [`run forge pr edit from a checkout of ${repo} with the PR head fetched (git fetch origin ${pr?.head?.ref ?? "<head ref>"})`];
+	}
+	return bar.checkReceipt(receipt, { cwd: ctx.cwd, head: pr?.head?.sha, base: pr?.base?.ref && `origin/${pr.base.ref}`,
+		readComment: async (r, id) => (await request(ctx, "GET", `/repos/${r}/issues/comments/${id}`))?.body });
+}
+
+/** An issue route reaches a PR too (Forgejo PRs are issues): a PR's new body gets the same check as pr edit. */
+async function issueBodyCheck(ctx, repo, n, body) {
+	if (body === undefined) return [];
+	const is = await request(ctx, "GET", `/repos/${repo}/issues/${n}`);
+	return is?.pull_request == null ? [] : prBodyCheck(ctx, repo, n, body);
+}
+
+const LABELS = { claude: "claude-code", codex: "codex", pi: "pi" };
+const PROMPTS = {
+	Summary: "What changed and why, in a sentence or two.",
+	Evidence: "What proves it works: commands run and what they printed.",
+	"Merge danger": "Pick one door; say what breaks and who notices if this is wrong.",
+	Backout: "How to undo it, e.g. revert the merge commit.",
+	"Test plan": "The command a reviewer runs, in the fence.",
+	"Local review": "Required: the swarm receipt (file path or Forge comment URL: reviewed: <sha>, 2 LANE: lines, open P0/P1: 0) and 0 open P0/P1 (factory-pr skill, \"Before the push\").",
+};
+
+function gitOut(ctx, args) {
+	const g = spawnSync("git", args, { cwd: ctx.cwd, encoding: "utf8", stdio: PIPE, maxBuffer: 64 * 1024 * 1024 });
+	if (g.status !== 0) throw new Error(`git ${args.join(" ")}: ${g.stderr.trim().split("\n")[0] || "failed"}`);
+	return g.stdout;
+}
+
+/** The PR skeleton forge-pr-open's bar checks: the signature first (GIT_STANDARDS), one prompt per section. */
+async function prBody(ctx, o) {
+	positionals(o, []);
+	const model = o.model ?? ctx.env.FORGE_MODEL;
+	const employee = ctx.employee();
+	const seat = employee ?? o.seat;
+	for (const [k, v] of [["issue", o.issue], ["seat", seat], ["model", model]]) {
+		if (!v) throw new Usage(`pr body needs --${k}${k === "model" ? " (or env FORGE_MODEL)" : ""}`);
+	}
+	const m = /^(?:https:\/\/forge\.example\.internal\/)?([\w.-]+\/[\w.-]+)(?:#|\/issues\/)([1-9]\d*)$/.exec(o.issue);
+	if (!m) throw new Usage(`--issue must be a Forge issue URL or owner/repo#n, got '${o.issue}'`);
+	const head = o.head ?? gitOut(ctx, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+	const numstat = gitOut(ctx, ["diff", "--numstat", "-z", `origin/${o.base ?? "main"}...${head}`]);
+	const bar = await import(pathToFileURL(join(HERE, "forge-pr-open")).href);
+	const files = bar.numstatRows(numstat).length;
+	const p = (s) => [`## ${s}`, `<!-- ${PROMPTS[s]} -->`];
+	const lines = [
+		`**agent:** ${employee ? "paperclip" : LABELS[ctx.harness()]} · model ${model} · seat ${seat} · ${new Date().toLocaleDateString("en-CA")}`, "",
+		...p("Summary"), `Record: [${m[1]}#${m[2]}](https://forge.example.internal/${m[1]}/issues/${m[2]})`, "",
+		...p("Evidence"), "", ...p("Merge danger"), "<one-way|two-way> door.", "Blast radius: ", "",
+		...p("Backout"), "", ...p("Test plan"), "```", "```", "",
+		...p("Local review"), "swarm: ", "open P0/P1: ", "",
+		`<!-- diff: ${files} files, ${bar.countAddedLines(numstat)} added lines (bar ${bar.MAX_LINES}) -->`,
+	];
+	for (const l of lines) ctx.stdout(l);
+	return 0;
+}
+
+const PR = {
+	body: prBody,
+	async view(ctx, o) {
+		const [repo, n] = target(ctx, o);
+		return send(ctx, "GET", `/repos/${repo}/pulls/${n}`, (pr) => [`${repo}#${pr.number} ${pr.title}`,
+			`state: ${pr.state}  merged: ${!!pr.merged}  mergeable: ${!!pr.mergeable}`,
+			`head: ${pr.head?.ref} ${pr.head?.sha}`, `base: ${pr.base?.ref}`, `url: ${pr.html_url}`]);
+	},
+	async list(ctx, o) {
+		const [state, limit, repo] = listArgs(ctx, o);
+		const path = `/repos/${repo}/pulls?state=${state}&limit=${limit}`;
+		return send(ctx, "GET", path, (prs) =>
+			prs.map((p) => `#${p.number} ${p.state} ${p.head?.ref} -> ${p.base?.ref} ${p.title}`));
+	},
+	async merge(ctx, o) {
+		const [repo, n] = target(ctx, o);
+		if (!o.sha) throw new Usage("pr merge needs --sha <head-sha>: merge only the head you checked");
+		const style = o.style ?? "squash";
+		if (!STYLES.has(style)) throw new Usage(`--style must be squash, merge or rebase, got '${style}'`);
+		const body = { Do: style, head_commit_id: o.sha, delete_branch_after_merge: !!o["delete-branch"] };
+		// Two transient Forgejo answers are retried: 405 "try again later" while it recomputes
+		// mergeability (after a retarget or reopen), and 409 "cannot lock ref" while another merge
+		// into the same base holds the ref lock (seen live with two merges at once). --sha still pins the head.
+		for (let i = 0; ; i++) {
+			try {
+				return await send(ctx, "POST", `/repos/${repo}/pulls/${n}/merge`, () => `merged ${repo}#${n} at ${o.sha}`, body);
+			} catch (err) {
+				const notReady = err instanceof Http && err.status === 405 && /try again later/i.test(err.message);
+				const locked = err instanceof Http && err.status === 409 && /cannot lock ref/i.test(err.message);
+				if (!(notReady || locked) || i >= MERGE_WAITS.length) throw err;
+				const why = locked ? "409 ref locked" : "405";
+				ctx.stderr(`forge: merge not ready (${why}), retry ${i + 1}/${MERGE_WAITS.length} in ${MERGE_WAITS[i]}s`);
+				await ctx.sleep(MERGE_WAITS[i]);
+			}
+		}
+	},
+	async retarget(ctx, o) {
+		const [repo, n, base] = target(ctx, o, ["base"]);
+		return send(ctx, "PATCH", `/repos/${repo}/pulls/${n}`, (pr) => `${pr.html_url} base: ${pr.base?.ref}`, { base });
+	},
+	edit: editFields("pulls", "pr", prBodyCheck),
+	close: setState("closed"),
+	reopen: setState("open"),
+	async comment(ctx, o) {
+		const [repo, n] = target(ctx, o);
+		return send(ctx, "POST", `/repos/${repo}/issues/${n}/comments`, (c) => c.html_url, { body: bodyOf(ctx, o, true) });
+	},
+	async review(ctx, o) {
+		const [repo, n] = target(ctx, o);
+		const event = EVENTS[o.event];
+		if (!event) throw new Usage("pr review needs --event approve|request-changes|comment");
+		const body = bodyOf(ctx, o, false) ?? "";
+		const code = await send(ctx, "POST", `/repos/${repo}/pulls/${n}/reviews`, (rv) => `${rv.state} ${rv.html_url}`, { event, body });
+		await RL.afterReview(ctx, repo, n, o.event);
+		return code;
+	},
+	async reviews(ctx, o) {
+		const [repo, n] = target(ctx, o);
+		return send(ctx, "GET", `/repos/${repo}/pulls/${n}/reviews`, (rvs) =>
+			rvs.map((v) => `${v.user?.login} ${v.state} ${v.submitted_at}`));
+	},
+	files: XV.files,
+	/** The PR's state, its head's per-context CI verdict and its non-CI files; exits as status --contexts. */
+	async check(ctx, o) {
+		const [repo, n] = target(ctx, o);
+		let ci;
+		try {
+			ci = new RegExp(o["ci-paths"] ?? CI_PATHS);
+		} catch (err) {
+			throw new Usage(`--ci-paths is not a valid regex: ${err.message}`);
+		}
+		ctx.httpExit = 3;
+		const pr = await request(ctx, "GET", `/repos/${repo}/pulls/${n}`);
+		if (!pr?.head?.sha) throw new Error(`pr ${n}: unreadable response`);
+		const contexts = await contextsOf(ctx, repo, pr.head.sha);
+		const files = [];
+		let got = [];
+		for (let page = 1; page === 1 || (got.length === PAGE && page <= MAX_PAGES); page++) {
+			got = (await request(ctx, "GET", `/repos/${repo}/pulls/${n}/files?page=${page}&limit=${PAGE}`)) ?? [];
+			files.push(...got);
+		}
+		if (got.length === PAGE) throw truncated(`pr ${n} files`);
+		const nonCi = files.map((f) => f.filename).filter((f) => !ci.test(f));
+		const out = { pr: { number: pr.number, state: pr.state, merged: !!pr.merged, head: pr.head.sha, base: pr.base?.ref,
+			mergeable: !!pr.mergeable }, contexts, non_ci_files: nonCi };
+		const state = pr.merged ? "merged" : pr.state;
+		return show(ctx, out, () => [`${repo}#${pr.number} ${state} head ${pr.head.sha.slice(0, 7)} base ${pr.base?.ref} mergeable ${!!pr.mergeable}`,
+			...contexts.map(contextLine), ...(nonCi.length ? ["non-ci files:", ...nonCi.map((f) => `  ${f}`)] : ["non-ci files: none"])],
+		contextsExit(contexts));
+	},
+};
+
+const labelNames = (labels) => (labels ?? []).map((l) => l.name).join(",");
+const org404 = (base) => (err) =>
+	(err instanceof Http && err.status === 404 && base.startsWith("/orgs/") ? null : Promise.reject(err));
+
+/** Every label usable on <repo>: its own and its owner org's (a 404 there means a user owner). */
+async function allLabels(ctx, repo) {
+	const all = [];
+	for (const base of [`/repos/${repo}/labels`, `/orgs/${repo.split("/")[0]}/labels`]) {
+		for (let page = 1, got = []; page === 1 || got.length === 50; page++) {
+			got = (await request(ctx, "GET", `${base}?page=${page}&limit=50`).catch(org404(base))) ?? [];
+			all.push(...got);
+		}
+	}
+	return all;
+}
+
+/** Label names -> ids; an unknown name is a usage error before anything is written. */
+async function labelIds(ctx, repo, names) {
+	const all = names.length ? await allLabels(ctx, repo) : [];
+	const missing = names.find((name) => !all.some((l) => l.name === name));
+	if (missing !== undefined) throw new Usage(`no label '${missing}' on ${repo}`);
+	return names.map((name) => all.find((l) => l.name === name).id);
+}
+
+const ISSUE = {
+	async view(ctx, o) {
+		const [repo, n] = target(ctx, o);
+		return send(ctx, "GET", `/repos/${repo}/issues/${n}`, (is) =>
+			[`${repo}#${is.number} ${is.title}`, `state: ${is.state}  labels: ${labelNames(is.labels)}`, `url: ${is.html_url}`]);
+	},
+	async list(ctx, o) {
+		const [state, limit, repo] = listArgs(ctx, o);
+		const labels = o.label.length ? `&labels=${o.label.map(encodeURIComponent).join(",")}` : "";
+		const path = `/repos/${repo}/issues?type=issues&state=${state}${labels}&limit=${limit}`;
+		return send(ctx, "GET", path, (iss) =>
+			iss.map((i) => `#${i.number} ${i.state} ${i.title} [${labelNames(i.labels)}]`));
+	},
+	async create(ctx, o) {
+		const repo = ctx.repo(positionals(o, ["repo"])[0]);
+		if (!o.title) throw new Usage("issue create needs --title");
+		const fields = { title: o.title, body: bodyOf(ctx, o, true), labels: await labelIds(ctx, repo, o.label) };
+		return send(ctx, "POST", `/repos/${repo}/issues`, (is) => is.html_url, fields);
+	},
+	edit: editFields("issues", "issue", issueBodyCheck),
+	comment: PR.comment,
+	close: setState("closed", "issues", true),
+	reopen: setState("open", "issues"),
+};
+
+async function labelTarget(ctx, o, create = false) {
+	const [r, n, ...names] = o._;
+	if (!names.length) throw new Usage(`expected <repo> <n> <name>..., got ${o._.length} argument(s)`);
+	const repo = ctx.repo(r);
+	num(n);
+	if (create) await RL.ensureNamed(ctx, repo, names);
+	return [repo, n, await labelIds(ctx, repo, names)];
+}
+
+const LABEL = {
+	async list(ctx, o) {
+		const [r] = positionals(o, ["repo"]);
+		return show(ctx, await allLabels(ctx, ctx.repo(r)), (all) => all.map((l) => `${l.id} ${l.name}`));
+	},
+	async add(ctx, o) {
+		const [repo, n, labels] = await labelTarget(ctx, o, true);
+		return show(ctx, await request(ctx, "POST", `/repos/${repo}/issues/${n}/labels`, { labels }, { expect: "array" }), labelNames);
+	},
+	async remove(ctx, o) {
+		const [repo, n, ids] = await labelTarget(ctx, o);
+		for (const id of ids) await request(ctx, "DELETE", `/repos/${repo}/issues/${n}/labels/${id}`);
+		return send(ctx, "GET", `/repos/${repo}/issues/${n}/labels`, labelNames);
+	},
+};
+
+const subVerbs = (verb, table) => async (ctx, [sub, ...rest]) => {
+	if (!Object.hasOwn(table, sub ?? "")) throw new Usage(`unknown ${verb} verb '${sub ?? ""}'`);
+	return table[sub](ctx, parseVerbArgs(rest, FLAGS[`${verb} ${sub}`]));
+};
+
+const VERBS = {
+	async whoami(ctx, args) {
+		positionals(parseVerbArgs(args), []);
+		const u = await request(ctx, "GET", "/user");
+		const login = ctx.employee();
+		if (login !== undefined && u?.login !== login) ctx.stderr(`forge: warning: the token is '${u?.login}', not FORGE_LOGIN '${login}'`);
+		return show(ctx, u, (x) => x.login);
+	},
+	async pr(ctx, [sub, ...rest]) {
+		if (sub !== "create") return subVerbs("pr", PR)(ctx, [sub, ...rest]);
+		if (ctx.elevated) throw new Usage("--elevated does not reach pr create: forge-pr-open runs as the session account");
+		// The PR bar lives in forge-pr-open, run by this Node (its Mac shebang is not on the Linux boxes);
+		// every arg passes through, --as (read anywhere by main) last. An employee passes none: it reads the env.
+		const as = ctx.employee() === undefined ? ["--as", ctx.harness()] : [];
+		return RL.afterCreate(ctx, rest, ctx.run(process.execPath, [join(HERE, "forge-pr-open"), ...rest, ...as]));
+	},
+	issue: subVerbs("issue", ISSUE),
+	label: subVerbs("label", LABEL),
+	run: subVerbs("run", XV.RUN),
+	comment: subVerbs("comment", XV.COMMENT),
+	repo: subVerbs("repo", XV.REPO),
+	branch: subVerbs("branch", XV.BRANCH),
+	secret: (ctx, args) => (SV.noValueFlag(args), subVerbs("secret", SV.SECRET)(ctx, args)),
+	async comments(ctx, args) {
+		const [repo, n] = target(ctx, parseVerbArgs(args));
+		const line = (c) => `--- ${c.user?.login} ${c.created_at} ${c.html_url}`;
+		return send(ctx, "GET", `/repos/${repo}/issues/${n}/comments`, (cs) => cs.flatMap((c) => [line(c), c.body]));
+	},
+	async status(ctx, args) {
+		const [r, ref] = positionals(parseVerbArgs(args.filter((a) => a !== "--contexts")), ["repo", "ref"]);
+		ctx.httpExit = 3;
+		if (args.includes("--contexts")) {
+			const cs = await contextsOf(ctx, ctx.repo(r), ref);
+			return show(ctx, cs, (x) => x.map(contextLine), contextsExit(cs));
+		}
+		const s = await request(ctx, "GET", `/repos/${ctx.repo(r)}/commits/${OP.segments("ref", ref, true)}/status`);
+		if (!s || typeof s !== "object") throw new Error(`status ${ref}: unreadable response`);
+		const [line, code] = classify(ref, s);
+		return show(ctx, s, () => line, code);
+	},
+	async api(ctx, args) {
+		const o = parseVerbArgs(args, FLAGS.api);
+		const [method, path] = positionals(o, ["METHOD", "path"]);
+		if (!METHODS.has(method)) throw new Usage(`METHOD must be one of ${[...METHODS].join(" ")}, got '${method}'`);
+		const badPath = !path.startsWith("/") || path.includes("://") || path.includes("#");
+		if (badPath) throw new Usage(`path must start with / and hold no scheme or #fragment, got '${path}'`);
+		const body = o["data-file"] === undefined ? undefined : ctx.readText(o["data-file"]);
+		if (body !== undefined && parseJson(body) === undefined) throw new Usage(`--data-file ${o["data-file"]} is not JSON`);
+		// The path must be a documented operation; the same redirects and scope pre-flight as `forge op` apply.
+		// A PR or issue body edit keeps its check: forge pr edit or forge issue edit, never a raw PATCH.
+		if (method === "PATCH" && /^\/?repos\/[^/]+\/[^/]+\/(issues|pulls)\/\d+$/.test(path.split("?")[0]) && Object.hasOwn(Object(parseJson(body ?? "null")), "body")) {
+			ctx.stderr("forge: refused: edit a PR or issue body with forge pr edit or forge issue edit");
+			return 1;
+		}
+		const target = OP.matchPath((await ctx.spec()).ops, method, path);
+		OP.guard(target);
+		OP.preflight(ctx, target);
+		const out = await request(ctx, method, path, body, { text: true, expect: "any" });
+		if (typeof out === "string") return ctx.stdout(out.replace(/\n$/, "")), 0;
+		return show({ ...ctx, json: true }, out);
+	},
+	find: OP.find,
+	op: OP.op,
+};
+
+export async function main(argv = process.argv.slice(2), deps = {}) {
+	const env = deps.env ?? process.env;
+	const stdout = deps.stdout ?? ((l) => console.log(l));
+	const stderr = deps.stderr ?? ((l) => console.error(l));
+	let tok = null, spec = null;
+	const ctx = {
+		json: false, as: undefined, elevated: argv[0] === "--elevated", httpExit: 1, stdout, stderr,
+		readText: (p) => (p === "-" && deps.stdin !== undefined ? deps.stdin : readText(p)),
+		fetch: deps.fetch ?? globalThis.fetch,
+		run: deps.run ?? ((file, args) => spawnSync(file, args, { stdio: "inherit" }).status ?? 3),
+		env, cwd: deps.cwd ?? process.cwd(),
+		sleep: deps.sleep ?? ((s) => new Promise((r) => setTimeout(r, s * 1000))),
+		harness: () => harnessOf(ctx.as, env),
+		employee: () => employeeOf(ctx.as, env),
+		repo: (s) => resolveRepo(s, ctx.cwd),
+		token: async () => (tok ??= ctx.employee() ? env.FORGEJO_TOKEN : await (deps.token ?? scriptToken)(ctx.elevated ? ELEVATED : ctx.harness())),
+		spec: (refresh = false) => (spec ??= OP.loadSpec({ env, fetch: ctx.fetch, stderr, refresh })
+			.then((s) => ({ ...s, ops: OP.index(s.spec) }))),
+	};
+	try {
+		let i = ctx.elevated ? 1 : 0;
+		for (; i < argv.length && argv[i].startsWith("-"); i++) {
+			if (argv[i] === "--help" || argv[i] === "-h") return (stdout(USAGE), 0);
+			if (argv[i] === "--elevated") throw new Usage(NOT_FIRST);
+			if (argv[i] === "--json") ctx.json = true;
+			else if (argv[i] !== "--as") throw new Usage(`unknown flag '${argv[i]}'`);
+			else if (i + 1 >= argv.length) throw new Usage("--as needs a value");
+			else ctx.as = harnessOf(argv[++i], env);
+		}
+		const [verb, ...rest] = argv.slice(i);
+		if (verb === undefined) return (stderr(USAGE), 3);
+		// --json and --as also work after the verb; a flag's value is skipped, never read as a flag.
+		const args = [];
+		for (let j = 0; j < rest.length; j++) {
+			if (rest[j] === "--json") ctx.json = true;
+			else if (rest[j] === "--elevated") throw new Usage(NOT_FIRST);
+			else if (rest[j] !== "--as") args.push(...(VALUED.has(rest[j]) ? rest.slice(j, ++j + 1) : [rest[j]]));
+			else if (j + 1 >= rest.length || FLAGGY.has(rest[j + 1])) throw new Usage("--as needs a value");
+			else ctx.as = harnessOf(rest[++j], env);
+		}
+		if (ctx.elevated) elevate(ctx, env);
+		if (verb === "help") return (stdout(USAGE), 0);
+		if (!Object.hasOwn(VERBS, verb)) throw new Usage(`unknown verb '${verb}' (forge --help lists them)`);
+		return await VERBS[verb](ctx, args);
+	} catch (err) {
+		const msg = String(err?.message ?? "unknown error").replace(/\s*\n\s*/g, " ");
+		stderr(`forge: ${tok ? msg.split(tok).join("***") : msg}`);
+		return err instanceof Http ? ctx.httpExit : 3;
+	}
+}
+
+const invoked = process.argv[1] ? realpathSync(process.argv[1]) : "";
+if (invoked === realpathSync(fileURLToPath(import.meta.url))) process.exitCode = await main();

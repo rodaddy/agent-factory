@@ -1,0 +1,11 @@
+{
+	"name": "@rodaddy/alerts",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Alertmanager webhook intake for the Software Factory board (sf#1226)",
+	"paperclipPlugin": {
+		"manifest": "./manifest.js",
+		"worker": "./worker.js"
+	}
+}

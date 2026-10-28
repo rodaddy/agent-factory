@@ -1,0 +1,25 @@
+                            tone: "danger",
+                        },
+                    });
+                    if (updated) {
+                        result.escalated += 1;
+                        result.issueIds.push(issue.id);
+                    }
+                    else {
+                        result.skipped += 1;
+                    }
+                    continue;
+                }
+                if (await isInvocationBudgetBlocked(issue, agentId)) {
+                    result.skipped += 1;
+                    continue;
+                }
+                const queued = await enqueueStrandedIssueRecovery({
+                    issueId: issue.id,
+                    agentId,
+                    reason: "issue_assignment_recovery",
+                    retryReason: "assignment_recovery",
+                    source: "issue.assignment_recovery",
+                    retryOfRunId: latestRun.id,
+                });
+                if (queued) {

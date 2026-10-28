@@ -1,0 +1,12 @@
+#!/bin/sh
+# Prefer seat Node 24; the factory CI image runs these modules with Bun.
+if [ "$(uname -s)" = Darwin ]; then
+  node_bin=/opt/homebrew/opt/node@24/bin/node
+else
+  node_bin=/usr/bin/node
+fi
+if "$node_bin" -e 'process.exit(Number(process.versions.node.split(".")[0]) === 24 ? 0 : 3)' 2>/dev/null; then
+  exec "$node_bin" "$(dirname "$0")/spec-ready.ts" "$@"
+fi
+command -v bun >/dev/null || { echo "spec-ready: Node 24 or Bun is required" >&2; exit 3; }
+exec bun "$(dirname "$0")/spec-ready.ts" "$@"

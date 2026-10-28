@@ -1,0 +1,43 @@
+{
+	"name": "software-factory",
+	"version": "0.1.0",
+	"license": "MIT",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"format:check": "biome format .",
+		"lint": "biome lint .",
+		"lint:size": "oxlint src -c .oxlintrc.json",
+		"typecheck": "tsc --noEmit",
+		"secrets": "gitleaks dir . --no-banner --redact",
+		"test": "bun scripts/test-run.ts",
+		"test:affected": "bun scripts/test-run.ts --affected \"${SF_AFFECTED_BASE:?}\"",
+		"check:static": "bun run format:check && bun run lint && bun run lint:size && bun run typecheck && bun run secrets",
+		"check": "bun run check:static && bun run test",
+		"check:affected": "bun run check:static && bun run test:affected",
+		"start": "bun run src/index.ts",
+		"db:push": "drizzle-kit push",
+		"db:generate": "drizzle-kit generate",
+		"db:migrate": "bun run scripts/migrate.ts"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.1.2",
+		"@earendil-works/pi-coding-agent": "1.1.0",
+		"@types/bun": "^1.2.19",
+		"@types/express": "5.0.0",
+		"drizzle-kit": "^0.31.10",
+		"express": "5.1.0",
+		"oxlint": "1.76.0",
+		"postgres": "^3.4.9",
+		"typescript": "^7.0.2"
+	},
+	"dependencies": {
+		"drizzle-orm": "^0.45.2",
+		"ignore": "^7.0.12",
+		"langfuse": "^3.38.20",
+		"nats": "^2",
+		"pino": "^10.3.1",
+		"yaml": "^2.9.0",
+		"zod": "^4.4.3"
+	}
+}

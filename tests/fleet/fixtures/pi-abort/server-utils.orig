@@ -1,0 +1,243 @@
+    if (command.includes("/") || command.includes("\\")) {
+        const absolute = path.isAbsolute(command)
+            ? command
+            : path.resolve(cwd, command);
+        throw new Error(`Command is not executable: "${command}" (resolved: "${absolute}")`);
+    }
+    throw new Error(`Command not found in PATH: "${command}"`);
+}
+export async function runChildProcess(runId, command, args, opts) {
+    const onLogError = opts.onLogError ??
+        ((err, id, msg) => console.warn({ err, runId: id }, msg));
+    return new Promise((resolve, reject) => {
+        const rawMerged = {
+            ...sanitizeInheritedPaperclipEnv(process.env),
+            ...opts.env,
+        };
+        // Strip Claude Code nesting-guard env vars so spawned `claude` processes
+        // don't refuse to start with "cannot be launched inside another session".
+        // These vars leak in when the Paperclip server itself is started from
+        // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
+        // owned by Claude Code) or when cron inherits a contaminated shell env.
+        const CLAUDE_CODE_NESTING_VARS = [
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_SESSION",
+            "CLAUDE_CODE_PARENT_SESSION",
+        ];
+        for (const key of CLAUDE_CODE_NESTING_VARS) {
+            delete rawMerged[key];
+        }
+        const mergedEnv = ensurePathInEnv(rawMerged);
+        if (opts.localProcessSandbox?.homeDir) {
+            mergedEnv.HOME = opts.localProcessSandbox.homeDir;
+        }
+        void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
+            remoteExecution: opts.remoteExecution ?? null,
+            remoteEnv: opts.remoteExecution ? opts.env : null,
+            localProcessSandbox: opts.localProcessSandbox ?? null,
+        })
+            .then((target) => {
+            const childEnv = { ...mergedEnv, ...target.env };
+            for (const [key, value] of Object.entries(childEnv)) {
+                if (value === undefined)
+                    delete childEnv[key];
+            }
+            const child = spawn(target.command, target.args, {
+                cwd: target.cwd ?? opts.cwd,
+                env: childEnv,
+                detached: process.platform !== "win32",
+                shell: false,
+                // sf SOF-11079: an SSH target sends its env on stdin (stdinPrefix).
+                stdio: [opts.stdin != null || target.stdinPrefix != null ? "pipe" : "ignore", "pipe", "pipe"],
+            });
+            if (target.stdinPrefix != null && child.stdin) {
+                child.stdin.on("error", () => { });
+                child.stdin.write(target.stdinPrefix);
+                if (opts.stdin == null)
+                    child.stdin.end();
+            }
+            const startedAt = new Date().toISOString();
+            const processGroupId = resolveProcessGroupId(child);
+            const spawnPersistPromise = typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
+                ? opts
+                    .onSpawn({ pid: child.pid, processGroupId, startedAt })
+                    .catch((err) => {
+                    onLogError(err, runId, "failed to record child process metadata");
+                })
+                : Promise.resolve();
+            runningProcesses.set(runId, {
+                child,
+                graceSec: opts.graceSec,
+                processGroupId,
+            });
+            let timedOut = false;
+            let stdout = "";
+            let stderr = "";
+            let logChain = Promise.resolve();
+            let terminalResultSeen = false;
+            let terminalCleanupStarted = false;
+            let terminalCleanupSignal = null;
+            let terminalCleanupForceKilled = false;
+            let terminalCleanupTimer = null;
+            let terminalCleanupKillTimer = null;
+            let terminalResultStdoutScanOffset = 0;
+            let terminalResultStderrScanOffset = 0;
+            const clearTerminalCleanupTimers = () => {
+                if (terminalCleanupTimer)
+                    clearTimeout(terminalCleanupTimer);
+                if (terminalCleanupKillTimer)
+                    clearTimeout(terminalCleanupKillTimer);
+                terminalCleanupTimer = null;
+                terminalCleanupKillTimer = null;
+            };
+            const maybeArmTerminalResultCleanup = () => {
+                const terminalCleanup = opts.terminalResultCleanup;
+                if (!terminalCleanup || terminalCleanupStarted || timedOut)
+                    return;
+                if (!terminalResultSeen) {
+                    const stdoutStart = Math.max(0, terminalResultStdoutScanOffset -
+                        TERMINAL_RESULT_SCAN_OVERLAP_CHARS);
+                    const stderrStart = Math.max(0, terminalResultStderrScanOffset -
+                        TERMINAL_RESULT_SCAN_OVERLAP_CHARS);
+                    const scanOutput = {
+                        stdout: stdout.slice(stdoutStart),
+                        stderr: stderr.slice(stderrStart),
+                    };
+                    terminalResultStdoutScanOffset = stdout.length;
+                    terminalResultStderrScanOffset = stderr.length;
+                    if (scanOutput.stdout.length === 0 &&
+                        scanOutput.stderr.length === 0)
+                        return;
+                    try {
+                        terminalResultSeen =
+                            terminalCleanup.hasTerminalResult(scanOutput);
+                    }
+                    catch (err) {
+                        onLogError(err, runId, "failed to inspect terminal adapter output");
+                    }
+                }
+                if (!terminalResultSeen)
+                    return;
+                if (terminalCleanupTimer)
+                    return;
+                const graceMs = Math.max(0, terminalCleanup.graceMs ?? 5_000);
+                terminalCleanupTimer = setTimeout(() => {
+                    terminalCleanupTimer = null;
+                    if (terminalCleanupStarted || timedOut)
+                        return;
+                    terminalCleanupStarted = true;
+                    terminalCleanupSignal = "SIGTERM";
+                    signalRunningProcess({ child, processGroupId }, "SIGTERM");
+                    terminalCleanupKillTimer = setTimeout(() => {
+                        terminalCleanupKillTimer = null;
+                        terminalCleanupSignal = "SIGKILL";
+                        terminalCleanupForceKilled = true;
+                        signalRunningProcess({ child, processGroupId }, "SIGKILL");
+                    }, Math.max(1, opts.graceSec) * 1000);
+                }, graceMs);
+            };
+            const timeout = opts.timeoutSec > 0
+                ? setTimeout(() => {
+                    timedOut = true;
+                    clearTerminalCleanupTimers();
+                    signalRunningProcess({ child, processGroupId }, "SIGTERM");
+                    setTimeout(() => {
+                        signalRunningProcess({ child, processGroupId }, "SIGKILL");
+                    }, Math.max(1, opts.graceSec) * 1000);
+                }, opts.timeoutSec * 1000)
+                : null;
+            child.stdout?.on("data", (chunk) => {
+                const readable = child.stdout;
+                if (!readable)
+                    return;
+                readable.pause();
+                const text = String(chunk);
+                stdout = appendWithCap(stdout, text);
+                maybeArmTerminalResultCleanup();
+                logChain = logChain
+                    .then(() => opts.onLog("stdout", text))
+                    .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
+                    .finally(() => {
+                    maybeArmTerminalResultCleanup();
+                    resumeReadable(readable);
+                });
+            });
+            child.stderr?.on("data", (chunk) => {
+                const readable = child.stderr;
+                if (!readable)
+                    return;
+                readable.pause();
+                const text = String(chunk);
+                stderr = appendWithCap(stderr, text);
+                maybeArmTerminalResultCleanup();
+                logChain = logChain
+                    .then(() => opts.onLog("stderr", text))
+                    .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
+                    .finally(() => {
+                    maybeArmTerminalResultCleanup();
+                    resumeReadable(readable);
+                });
+            });
+            const stdin = child.stdin;
+            if (opts.stdin != null && stdin) {
+                void spawnPersistPromise.finally(() => {
+                    if (child.killed || stdin.destroyed)
+                        return;
+                    stdin.write(opts.stdin);
+                    stdin.end();
+                });
+            }
+            child.on("error", (err) => {
+                if (timeout)
+                    clearTimeout(timeout);
+                clearTerminalCleanupTimers();
+                runningProcesses.delete(runId);
+                void target.cleanup?.();
+                const errno = err.code;
+                const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
+                const msg = errno === "ENOENT"
+                    ? `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`
+                    : `Failed to start command "${command}" in "${opts.cwd}": ${err.message}`;
+                reject(new Error(msg));
+            });
+            child.on("exit", () => {
+                maybeArmTerminalResultCleanup();
+            });
+            child.on("close", (code, signal) => {
+                if (timeout)
+                    clearTimeout(timeout);
+                clearTerminalCleanupTimers();
+                runningProcesses.delete(runId);
+                void logChain.finally(() => {
+                    void Promise.resolve()
+                        .then(() => target.cleanup?.())
+                        .finally(() => {
+                        resolve({
+                            exitCode: code,
+                            signal,
+                            timedOut,
+                            stdout,
+                            stderr,
+                            pid: child.pid ?? null,
+                            startedAt,
+                            terminalResultCleanup: terminalCleanupStarted
+                                ? {
+                                    kind: "terminal_result_cleanup",
+                                    stopped: true,
+                                    stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                                    reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                                    terminalResultSeen,
+                                    signal: terminalCleanupSignal,
+                                    forceKilled: terminalCleanupForceKilled,
+                                }
+                                : null,
+                        });
+                    });
+                });
+            });
+        })
+            .catch(reject);
+    });
+}
+//# sourceMappingURL=server-utils.js.map

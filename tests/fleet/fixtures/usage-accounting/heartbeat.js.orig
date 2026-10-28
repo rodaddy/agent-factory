@@ -1,0 +1,97 @@
+import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
+import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
+import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
+    }
+}
+function resolveLedgerBiller(result) {
+    return (readNonEmptyString(result.biller) ??
+        readNonEmptyString(result.provider) ??
+        "unknown");
+}
+function normalizeBilledCostCents(costUsd, billingType) {
+    if (billingType === "subscription_included")
+    return Math.max(0, Math.round(costUsd * 100));
+}
+export function resolveLedgerCostStatus(input) {
+    const hasTokenUsage = input.inputTokens > 0 ||
+        input.cachedInputTokens > 0 ||
+        input.outputTokens > 0;
+    return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
+}
+export function resolveCacheAdjustedCostUsd(input) {
+    const explicit = input.cacheAdjustedCostUsd;
+    async function updateRuntimeState(agent, run, result, session, normalizedUsage) {
+        await ensureRuntimeState(agent);
+        const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
+        const inputTokens = usage?.inputTokens ?? 0;
+        const outputTokens = usage?.outputTokens ?? 0;
+        const cachedInputTokens = usage?.cachedInputTokens ?? 0;
+        const billingType = normalizeLedgerBillingType(result.billingType);
+        const billedCostUsd = resolveCacheAdjustedCostUsd(result);
+        const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
+        const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+        const costStatus = resolveLedgerCostStatus({
+            costUsd: billedCostUsd,
+            inputTokens,
+            cachedInputTokens,
+            outputTokens,
+        });
+        const provider = result.provider ?? "unknown";
+        const biller = resolveLedgerBiller(result);
+        const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
+        await db
+            .update(agentRuntimeState)
+            .set({
+            adapterType: agent.adapterType,
+            sessionId: session.legacySessionId,
+            lastRunId: run.id,
+            lastRunStatus: run.status,
+            lastError: run.error ?? null,
+            totalInputTokens: sql `${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
+            totalOutputTokens: sql `${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
+            totalCachedInputTokens: sql `${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
+            totalCostCents: sql `${agentRuntimeState.totalCostCents} + ${additionalCostCents}`,
+            updatedAt: new Date(),
+        })
+            .where(eq(agentRuntimeState.agentId, agent.id));
+        if (additionalCostCents > 0 || hasTokenUsage) {
+            const costs = costService(db, budgetHooks);
+            await costs.createEvent(agent.companyId, {
+                heartbeatRunId: run.id,
+                agentId: agent.id,
+                issueId: ledgerScope.issueId,
+                projectId: ledgerScope.projectId,
+                billingCode: ledgerScope.billingCode,
+                provider,
+                biller,
+                billingType,
+                costStatus,
+                model: result.model ?? "unknown",
+                inputTokens,
+                cachedInputTokens,
+                outputTokens,
+                costCents: additionalCostCents,
+                occurredAt: new Date(),
+            });
+        }
+    }
+                        sessionRotated: sessionCompaction.rotate,
+                        sessionRotationReason: sessionCompaction.reason,
+                        configFreshness: configFreshnessResultMetadata,
+                        provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
+                        biller: resolveLedgerBiller(adapterResult),
+                        model: readNonEmptyString(adapterResult.model) ?? "unknown",
+                        ...(adapterResult.costUsd != null
+                        ...(cacheAdjustedCostUsd != null
+                            ? { cacheAdjustedCostUsd }
+                            : {}),
+                        costStatus: resolveLedgerCostStatus({
+                            costUsd: cacheAdjustedCostUsd,
+                            inputTokens: normalizedUsage?.inputTokens ?? 0,
+                            cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
+                            outputTokens: normalizedUsage?.outputTokens ?? 0,
+                        }),
+                        billingType: normalizeLedgerBillingType(adapterResult.billingType),
+                    }
+                    : null;
+                const persistedResultJson = mergeHeartbeatRunResultJson(mergeRunStopMetadataForAgent(agent, outcome, {

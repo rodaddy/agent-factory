@@ -1,0 +1,8 @@
+# Another app already serves the fixture declaration's uat host.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata: { name: other-app-uat, namespace: other-app-uat }
+spec:
+  routes:
+    - kind: Rule
+      match: Host(`linkedin-uat.rtech.internal`)

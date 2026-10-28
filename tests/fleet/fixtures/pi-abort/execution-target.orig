@@ -1,0 +1,83 @@
+import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+        stderr: `${result.stderr}${separator}${note}`,
+    };
+}
+export async function runAdapterExecutionTargetProcess(runId, target, command, args, options) {
+    if (target?.kind === "remote" && target.transport === "sandbox") {
+        const runner = requireSandboxRunner(target);
+        const env = sanitizeRemoteExecutionEnv(options.env);
+        await options.onRuntimeProgress?.({
+            phase: "adapter_startup",
+            message: "Starting adapter in environment",
+        });
+        const runLogTail = options.runLogTail?.create() ?? null;
+        let execCommand = command;
+        let execArgs = args;
+        if (runLogTail) {
+            ({ command: execCommand, args: execArgs } = runLogTail.wrapCommand(command, args));
+            runLogTail.start(options.onLog);
+        }
+        try {
+            const result = await runner.execute({
+                command: execCommand,
+                args: execArgs,
+                cwd: target.remoteCwd,
+                env,
+                stdin: options.stdin,
+                timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
+                // The tail loop already streams incremental chunks; suppress the
+                // runner's end-of-run batched onLog to avoid duplicate log bytes.
+                onLog: runLogTail ? undefined : options.onLog,
+                onSpawn: options.onSpawn
+                    ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
+                    : undefined,
+            });
+            // Settle the duplex run disposition synchronously at the clean-completion
+            // boundary, before the run-log tail finishes. The atomic settle marks the
+            // host-observed orderly completion in one broker step, so a gateway exit
+            // after the clean process completion cannot latch a false mid-run loss. A
+            // control channel that died before this clean completion still fails the
+            // run closed.
+            const settled = applyRunDispositionSeam(result, options.settleRunDisposition);
+            if (runLogTail) {
+                await runLogTail.finish({ stdout: result.stdout, stderr: result.stderr });
+            }
+            return settled;
+        }
+        catch (error) {
+            if (runLogTail) {
+                await runLogTail.abort();
+            }
+            throw error;
+        }
+    }
+    const env = target?.kind === "remote" && target.transport === "ssh"
+        ? sanitizeRemoteExecutionEnv(options.env)
+        : options.env;
+    return await runChildProcess(runId, command, args, {
+        cwd: options.cwd,
+        env,
+        stdin: options.stdin,
+        timeoutSec: options.timeoutSec,
+        graceSec: options.graceSec,
+        onLog: options.onLog,
+        onSpawn: options.onSpawn,
+        terminalResultCleanup: options.terminalResultCleanup,
+        localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
+        remoteExecution: adapterExecutionTargetToRemoteSpec(target),
+    });
+}
+            shellCommand,
+        });
+    }
+    catch (error) {
+        await Promise.allSettled([
+            server?.stop(),
+            worker?.stop(),
+            bridgeAsset.cleanup(),
+        ]);
+        throw error;
+    }
+    let runLogTail = null;

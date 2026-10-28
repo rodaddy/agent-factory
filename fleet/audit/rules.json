@@ -1,0 +1,16 @@
+{
+	"rules": [
+		{ "id": "queue-depth", "threshold": 20, "severity": "act" },
+		{ "id": "work-on-paused", "threshold": 0, "severity": "act" },
+		{ "id": "fail-rate", "threshold": 0.3, "minRuns": 10, "severity": "act" },
+		{ "id": "issue-churn", "threshold": 3, "severity": "watch" },
+		{ "id": "review-churn", "threshold": 3, "severity": "watch" },
+		{ "id": "stale-blocked", "threshold": 24, "severity": "act" },
+		{ "id": "unfinished-tokens", "threshold": 0.25, "severity": "watch" },
+		{ "id": "trace-gap", "threshold": 0.05, "severity": "watch" },
+		{ "id": "recovery-active", "threshold": 50, "severity": "watch" },
+		{ "id": "collection-gap", "threshold": 0, "severity": "watch" },
+		{ "id": "idle-with-todo", "threshold": 0.5, "severity": "act" }
+	],
+	"benchmark": { "minRuns": 20, "hostMemoryKb": 16777216, "headroom": 0.8, "capacityConstant": 20 }
+}

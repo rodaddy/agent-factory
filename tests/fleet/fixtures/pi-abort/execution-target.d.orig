@@ -1,0 +1,9 @@
+    } | null;
+    restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+}
+export interface AdapterExecutionTargetProcessOptions {
+    cwd: string;
+    env: Record<string, string>;
+    stdin?: string;
+    timeoutSec: number;
+    graceSec: number;

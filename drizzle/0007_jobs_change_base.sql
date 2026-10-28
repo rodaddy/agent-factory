@@ -1,0 +1,23 @@
+-- sf#301 — carry the CHANGE BASE a job's proposed change must descend from,
+-- when that base is a DIFFERENT repository at a different commit from the job's
+-- own dispatch identity.
+--
+-- A deterministic k3s verb job (newapp/newroute/newdb and their reverses) is
+-- dispatched against a managed repository's ISSUE, and `jobs.sha` holds the
+-- rails-manifest sha256 that job was built from. But the change it returns is a
+-- render against `rtech/k3s-deploy`, so `change-verifier` must prove the bundle
+-- descends from that repository's head — not from the manifest digest, which is
+-- not a git object at all.
+--
+-- These columns are ADDITIVE and NULLABLE. Every existing job leaves them NULL
+-- and `dispatchedBaseForJob` then answers exactly as it always did, so no
+-- deployed row changes meaning.
+--
+-- WHY NOT OVERLOAD `jobs.sha`: `createPendingJob` dedups on
+-- (repository_id, item_id, sha, job_type). Writing the k3s-deploy head into
+-- `sha` would change that key's meaning in BOTH directions — a rails-manifest
+-- edit at an unchanged k3s head would stop creating a job, and a k3s head
+-- advance would create a duplicate job for an unchanged manifest. The dedup key
+-- is deliberately left alone. (Recorded: _DOCS/decisions-ledger.md L-013.)
+ALTER TABLE "jobs" ADD COLUMN "change_base_repository" text;--> statement-breakpoint
+ALTER TABLE "jobs" ADD COLUMN "change_base_sha" text;

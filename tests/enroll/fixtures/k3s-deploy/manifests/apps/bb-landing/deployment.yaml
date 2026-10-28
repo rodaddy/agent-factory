@@ -1,0 +1,10 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bb-landing
+spec:
+  template:
+    spec:
+      containers:
+        - name: web
+          image: "10.0.20.58:3000/acme/web-bb-landing:v0.17.3"

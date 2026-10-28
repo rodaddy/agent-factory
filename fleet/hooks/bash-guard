@@ -1,0 +1,1330 @@
+#!/usr/bin/env python3
+"""bash-guard (sf#1221): Claude Code PreToolUse floor for a fleet box.
+
+Reads the hook JSON on stdin. Allow = exit 0, silent. Deny = exit 2 with one
+stderr line naming the rule. Deterministic: no network, no model. This is the
+floor, not a sandbox: only the listed rules deny.
+"""
+import json
+import os
+import re
+import shlex
+import sys
+
+# The home of the user the guard runs as: each box's agent has its own (sf#1262).
+HOME = os.path.expanduser("~").rstrip("/")
+if not HOME.startswith("/"):  # HOME unset-to-empty, "/", or relative: ask the OS
+    import pwd
+
+    HOME = pwd.getpwuid(os.getuid()).pw_dir.rstrip("/")
+# Where an agent may rm -r its own work: (root, path components required below
+# it). ~/fleet-work needs <project>/<dir>, so no run removes a whole project
+# folder that is another run's cwd; ~/work needs one component.
+WORK_ROOTS = (
+    (HOME + "/work", 1),
+    (HOME + "/fleet-work", 2),
+)
+RM_ALLOWED = "%s/work/<dir> or %s/fleet-work/<project>/<dir>" % (HOME, HOME)
+GUARDED = (
+    HOME + "/.claude/settings.json",
+    HOME + "/.claude/settings.local.json",
+    "fleet/hooks/bash-guard",
+    HOME + "/fleet/hooks/",
+    # The Pi and Codex adapters (sf#1230) are part of the same floor.
+    HOME + "/fleet/pi-extensions/fleet-guard",
+    HOME + "/.pi/agent/extensions/",
+    HOME + "/.codex/hooks.json",
+    HOME + "/.codex/config.toml",
+)
+# SSH is Nagatha's alone (Rico, 2026-10-02): every other employee is refused
+# the ssh family, git/rsync over ssh, and any touch of ~/.ssh. Her Claude runs
+# carry FLEET_EMPLOYEE=infra; her Pi runs on host01 carry FLEET_EMPLOYEE=nagatha,
+# the seat name pi-employee needs for pi/profiles/nagatha.json (sf#1584,
+# sf#1652). The hard lock is her own OS user owning the key; this rule is the
+# floor until then.
+SSH_EMPLOYEES = frozenset({"infra", "nagatha"})
+SSH_PROGS = {"ssh", "scp", "sftp", "sshfs", "ssh-add", "ssh-agent", "ssh-copy-id", "autossh", "ssh-keyscan"}
+SSH_DIR = HOME + "/.ssh"
+# ansible applies changes the guard cannot see (2026-10-05: a reviewer's local
+# inventory ran `systemctl --user stop paperclipai.service`, Paperclip down
+# 4h52m). Nagatha alone applies; everyone else is --check only (sf#1427).
+ANSIBLE_PROGS = {"ansible", "ansible-playbook", "ansible-pull", "ansible-console"}
+ANSIBLE_DRY = {
+    "--check", "-C", "--syntax-check", "--list-hosts", "--list-tasks", "--list-tags", "--version", "-h", "--help",
+}
+# Short flags of ansible/ansible-playbook that take a value (their --help): in a
+# cluster such as -lC the C after one of them is that value, not --check.
+ANSIBLE_VALUE_SHORT = "ilteucfMTamBP"
+ANSIBLE_CHECK_LIMIT = (
+    "a task with check_mode: false runs for real even under --check, so a reviewer never runs "
+    "a playbook against its own box, and reads such tasks instead"
+)
+ANSIBLE_INV_FLAGS = ("-i", "--inventory", "--inventory-file")
+ANSIBLE_LOCAL_RE = re.compile(r"""ansible_connection\s*[:=]\s*["']?local""", re.I)
+# `python -m ansible.cli.<x>` / `python -m ansible <x>` is ansible-<x> by another
+# door (sf#1437). The read-only tools map to names the rule leaves alone.
+PYTHON_RE = re.compile(r"^python[0-9.]*[a-z]?$")
+PYTHON_VALUE_SHORT = "WXQ"
+PYTHON_VALUE_LONG = {"--check-hash-based-pycs"}
+ANSIBLE_CLI_MODULES = {
+    "adhoc": "ansible", "playbook": "ansible-playbook", "pull": "ansible-pull", "console": "ansible-console",
+    "doc": "ansible-doc", "config": "ansible-config", "inventory": "ansible-inventory",
+    "galaxy": "ansible-galaxy", "vault": "ansible-vault",
+}
+WRAPPERS = {"sudo", "command", "builtin", "env", "exec", "nohup", "time"}
+# Launchers that run another command (sf#1427: `timeout 600 ansible-playbook`
+# is rtech-infra's own habit). Each maps to (options that take a separate
+# value, positional args before the command); the inner command is re-checked.
+UV_VALUE_OPTS = {
+    "--with", "-w", "--with-editable", "--with-requirements", "--python", "-p", "--project", "--directory",
+    "--package", "--extra", "--group", "--only-group", "--no-group", "--env-file", "--from", "--index",
+    "--default-index", "--index-url", "--extra-index-url", "-i", "--find-links", "-f", "--cache-dir",
+    "--config-file", "--color",
+}
+LAUNCHERS = {
+    "timeout": ({"-s", "--signal", "-k", "--kill-after"}, 1),
+    "nice": ({"-n", "--adjustment"}, 0),
+    "ionice": ({"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"}, 0),
+    "stdbuf": ({"-i", "--input", "-o", "--output", "-e", "--error"}, 0),
+    "setsid": (set(), 0),
+    "xargs": ({"-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "--arg-file", "--delimiter", "--max-args",
+               "--max-procs", "--max-lines", "--max-chars", "--process-slot-var"}, 0),
+    "uvx": (UV_VALUE_OPTS, 0),
+}
+SHELLS = {"bash", "sh", "zsh", "dash"}
+LAUNCH_DEPTH = 5
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done", "time"}
+SEP_CHARS = set(";&|\n")
+# Never /tmp (sf#1462 item 6, Development's no-tmp rule): /tmp is box- and
+# sandbox-local, so a write there is lost to every other run. Writes under
+# these roots are refused; reads stay open.
+TMP_ROOTS = ("/tmp", "/private/tmp", "/private/var/folders")
+TMP_HELP = "write scratch under your work folder (~/work/<dir> or ~/fleet-work/<project>/<dir>)"
+REDIRECT_RE = re.compile(r"^\d*>>?(.*)$")
+DECLARE_PROGS = {"export", "declare", "typeset", "local", "readonly"}
+# model-gate (sf#1642, Development's dev-rules): an employee works in its own
+# Paperclip seat; a nested headless `claude -p` / `claudex ... -p` is refused.
+MODEL_PROGS = {"claude", "claudex"}
+# forge-api (sf#1482, Development's dev-rules forge-api.ts): an employee calls
+# Forge through the vendored forge CLI, never raw curl/wget to the API.
+FORGE_API_RE = re.compile(r"^(?:https?://)?(?:forge\.example\.internal|10\.0\.20\.58:3000)/api/")
+FORGE_API_HELP = "use forge (/usr/bin/node ~/fleet/forge/forge <verb>), not raw curl/wget to the Forge API"
+# identity (sf#1642): an employee commit ends with this line, FORGE_LOGIN from
+# the environment, and carries no Claude-Session link.
+AGENT_LINE = "Agent: paperclip · <model> · $FORGE_LOGIN"
+# git's global options that take a separate value (`git -C dir commit`).
+GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"}
+# `git commit` options that take a value: short (in a cluster the rest, or the
+# next word, is the value) and long (`--x=v` or `--x v`).
+COMMIT_VALUE_SHORT = "mFCct"
+COMMIT_VALUE_LONG = {
+    "--message", "--file", "--trailer", "--reuse-message", "--reedit-message", "--fixup", "--squash",
+    "--template", "--author", "--date", "--cleanup", "--pathspec-from-file",
+}
+
+
+class Deny(Exception):
+    def __init__(self, rule, reason):
+        super().__init__(reason)
+        self.rule = rule
+        self.reason = reason
+
+
+def expand_home(s):
+    for p in ("~/", "$HOME/", "${HOME}/"):
+        if s.startswith(p):
+            return HOME + "/" + s[len(p):]
+    if s in ("~", "$HOME", "${HOME}"):
+        return HOME
+    return s
+
+
+def norm_path(path, cwd=""):
+    p = expand_home(path or "")
+    if not p:
+        return p
+    if not p.startswith("/") and cwd:
+        p = cwd.rstrip("/") + "/" + p
+    p = os.path.normpath(p)
+    return re.sub(r"^/+", "/", p)
+
+
+def under_tmp(p):
+    return any(p == r or p.startswith(r + "/") for r in TMP_ROOTS)
+
+
+def lands_in_tmp(target, cwd):
+    """True when a write target is under a TMP_ROOTS root, spelled or with
+    links followed. A leading $TMPDIR is this process's own TMPDIR, else /tmp;
+    any other variable part is judged by the literal text before it."""
+    m = re.match(r"^\$\{?TMPDIR\}?(?=/|$)", target or "")
+    if m:
+        target = (os.environ.get("TMPDIR") or TMP_ROOTS[0]).rstrip("/") + target[m.end():]
+    target = expand_home(target or "")
+    if "$" in target:
+        target = target[:target.index("$")]
+    p = norm_path(target, cwd)
+    if not p.startswith("/"):
+        return False
+    return under_tmp(p) or under_tmp(os.path.realpath(p))
+
+
+def check_no_tmp_path(target, cwd, what):
+    if lands_in_tmp(target, cwd):
+        raise Deny("no-tmp", what + " is under /tmp; " + TMP_HELP)
+
+
+def without_redirects(args):
+    """The args without `<in`, `2>err`, `> out` and the like (a bare operator takes the next word)."""
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif re.match(r"^\d*[<>]", a):
+            skip = re.match(r"^\d*[<>]+$", a) is not None
+        else:
+            out.append(a)
+    return out
+
+
+def mktemp_target(args):
+    """Where mktemp makes its file: the -p/--tmpdir= folder, else a template
+    that names its own place (no -t), else TMPDIR, which reads as /tmp
+    whatever TMPDIR is. None for --help/--version."""
+    folder, in_tmp, operands, i = None, False, [], 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--help", "--version"):
+            return None
+        if a == "--":
+            operands.extend(args[i + 1:])
+            break
+        if a == "--tmpdir":
+            in_tmp = True
+        elif a.startswith("--tmpdir="):
+            folder = a[len("--tmpdir="):]
+        elif a.startswith("-") and len(a) > 1 and not a.startswith("--"):
+            for k in range(1, len(a)):
+                if a[k] == "t":
+                    in_tmp = True
+                elif a[k] == "p":
+                    folder = a[k + 1:] or (args[i + 1] if i + 1 < len(args) else "")
+                    i += 0 if a[k + 1:] else 1
+                    break
+        elif not a.startswith("-"):
+            operands.append(a)
+        i += 1
+    if folder is not None:
+        return folder or TMP_ROOTS[0]
+    return TMP_ROOTS[0] if in_tmp or not operands else operands[-1]
+
+
+def check_no_tmp_segment(prog, args, here):
+    """The no-tmp writes one command makes: tee/cp/mv/install/ln destinations,
+    where mktemp lands, a cd/pushd target, a TMPDIR given to export/declare."""
+    args = without_redirects(args)
+    if prog == "tee":
+        for a in positional(args):
+            check_no_tmp_path(a, here, "tee " + a)
+    elif prog in ("cp", "mv", "install", "ln"):
+        dests = [args[i + 1] for i, a in enumerate(args[:-1]) if a in ("-t", "--target-directory")]
+        dests += [a.split("=", 1)[1] for a in args if a.startswith("--target-directory=")]
+        pos = positional(args, ("-t", "--target-directory", "-m", "-o", "-g", "-S"))
+        if not dests:
+            dests = pos if prog == "install" and "-d" in args else pos[-1:] if len(pos) > 1 else []
+        for d in dests:
+            check_no_tmp_path(d, here, prog + " to " + d)
+    elif prog == "mktemp":
+        target = mktemp_target(args)
+        if target is not None:
+            check_no_tmp_path(target, here, "mktemp in " + target)
+    elif prog in ("cd", "pushd"):
+        target = next((a for a in args if a != "--" and not re.match(r"^-[A-Za-z@]+$", a)), None)
+        if target is not None:
+            check_no_tmp_path(target, here, prog + " " + target)
+    elif prog in DECLARE_PROGS:
+        for a in args:
+            if a.startswith("TMPDIR="):
+                check_no_tmp_path(a[len("TMPDIR="):], here, a)
+
+
+def check_model_gate(prog, args):
+    """Refuse claude/claudex in print mode: -p, --print, or a short cluster
+    holding p (`-cp`), anywhere before `--`."""
+    if prog not in MODEL_PROGS:
+        return
+    for a in args:
+        if a == "--":
+            return
+        if a in ("-p", "--print") or (re.match(r"^-[A-Za-z]+$", a) and "p" in a[1:]):
+            raise Deny(
+                "model-gate",
+                prog + " " + a + " is a nested headless Claude run; employees work in their own Paperclip seat, "
+                "and dev-rules refuses print mode on the Mac too",
+            )
+
+
+def git_subcommand(args):
+    """(subcommand, its args, the -C dir or None) of a git invocation."""
+    i, cdir = 0, None
+    while i < len(args):
+        a = args[i]
+        if a in GIT_VALUE_OPTS:
+            if a == "-C" and i + 1 < len(args):
+                cdir = args[i + 1] if cdir is None else norm_path(args[i + 1], cdir)
+            i += 2
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        return a, args[i + 1:], cdir
+    return None, [], cdir
+
+
+def commit_message(args, cwd):
+    """The message parts a `git commit` is given: (-m values, -F path or
+    None, --trailer values, amend, no_edit, reuse)."""
+    msgs, file, trailers, amend, no_edit, reuse = [], None, [], False, False, False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if a == "--":
+            break
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if name in COMMIT_VALUE_LONG:
+                if not eq:
+                    val = nxt
+                    i += 1
+                if name == "--message":
+                    msgs.append(val or "")
+                elif name == "--file":
+                    file = lit(nxt) if not eq else lit(a).partition("=")[2]
+                    file = file or ""
+                elif name == "--trailer":
+                    trailers.append(val or "")
+                elif name in ("--reuse-message", "--reedit-message", "--fixup", "--squash"):
+                    reuse = True
+            elif a == "--amend":
+                amend = True
+            elif a == "--no-edit":
+                no_edit = True
+        elif a.startswith("-") and len(a) > 1:
+            for k in range(1, len(a)):
+                ch = a[k]
+                if ch in COMMIT_VALUE_SHORT:
+                    val = a[k + 1:]
+                    if not val:
+                        val = nxt
+                        i += 1
+                    if ch == "m":
+                        msgs.append(val or "")
+                    elif ch == "F":
+                        file = (lit(a)[k + 1:] or lit(nxt)) or ""
+                    elif ch in "Cc":
+                        reuse = True
+                    break
+        i += 1
+    return msgs, file, trailers, amend, no_edit, reuse
+
+
+def message_command_safe(command):
+    """Honor env paths only in a lone commit with a wholly double-quoted file.
+
+    Keep raw quotes: the normal segment parser deliberately removes them.
+    No other word may perform expansion before git reads the message file.
+    """
+    lex = shlex.shlex(command, posix=False, punctuation_chars=";&|()\n")
+    lex.whitespace = " \t\r"
+    lex.whitespace_split = True
+    lex.commenters = ""
+    try:
+        toks = list(lex)
+        if len(toks) != len(shlex.split(command, posix=True)):
+            return False
+    except ValueError:
+        return False
+    if any(t and set(t) <= set(";&|()\n") for t in toks) or "\n" in command:
+        return False
+    if not toks or toks[0] != "git":
+        return False
+    sub, rest, _ = git_subcommand(toks[1:])
+    if sub != "commit":
+        return False
+    file = commit_message(rest, None)[1]
+    if file is None or not re.fullmatch(r'"(?:\\.|[^"\\])*"', file):
+        return False
+    file_words = (file, "-F" + file, "--file=" + file)
+    if sum(word in file_words for word in toks) != 1:
+        return False
+    for word in toks:
+        if word in file_words:
+            continue
+        if any(marker in word for marker in ("$", "`", "((", "<(", ">(")):
+            return False
+    return True
+
+
+def expand_message_file(file, command):
+    """Expand only `$PAPERCLIP_SCRATCH_DIR` or `${PAPERCLIP_SCRATCH_DIR}`
+    from this process's environment, only in a lone git commit with a wholly
+    double-quoted path (sf#1690). Only a literal leading `~` is home-expanded. A `$` the
+    shell keeps literal arrives as LITERAL_DOLLAR and is not expanded; the
+    caller restores it after path normalization. Nothing else is evaluated; `segments` turns `$(` and a
+    backtick into a newline, so a newline here is a command substitution."""
+    if "\n" in file or "$(" in file or "`" in file:
+        raise Deny("identity", "the commit message file " + file.replace(LITERAL_DOLLAR, "$").strip() + " uses command substitution; pass an absolute path")
+
+    shown = file.replace(LITERAL_DOLLAR, "$")
+
+    def var(m):
+        name = m.group(1) or m.group(2)
+        if name not in os.environ:
+            raise Deny("identity", "the commit message file " + shown + " names $" + name + ", which is not set; pass an absolute path")
+        return os.environ[name]
+
+    pattern = r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)"
+    for m in re.finditer(pattern, file):
+        name = m.group(1) or m.group(2)
+        if name not in ("PAPERCLIP_SCRATCH_DIR",):
+            raise Deny("identity", "the commit message file " + shown + " uses $" + name + "; only $PAPERCLIP_SCRATCH_DIR is expanded, otherwise pass an absolute path")
+        if not message_command_safe(command):
+            raise Deny("identity", "the commit message file " + shown + " uses $" + name + " outside a lone, double-quoted git commit; pass an absolute path")
+    out = re.sub(pattern, var, expand_home(file))
+    if "$" in out:
+        raise Deny("identity", "the commit message file " + shown + " has a $ form the guard does not expand; pass an absolute path")
+    return out
+
+
+def check_identity(args, cwd, command):
+    """An employee `git commit` must end with the paperclip Agent line naming
+    its FORGE_LOGIN and carry no Claude-Session link (sf#1642)."""
+    sub, rest, cdir = git_subcommand(args)
+    if sub != "commit":
+        return
+    msgs, file, trailers, amend, no_edit, reuse = commit_message(rest, cwd)
+    if not msgs and file is None:
+        if amend and no_edit and not reuse:
+            return  # git keeps the message it already has
+        raise Deny(
+            "identity",
+            "git commit without -m or -F (an editor, -C/-c reuse, --fixup or --squash) cannot be checked; "
+            "pass -m with the last line " + AGENT_LINE,
+        )
+    if file is not None:
+        if file == "-":
+            raise Deny("identity", "git commit -F - reads stdin, which cannot be checked; write the message to a file")
+        base = norm_path(cdir, cwd) if cdir else cwd
+        # Normalize after expansion without expanding a tilde from an env value.
+        expanded = expand_message_file(file, command)
+        path = os.path.normpath(os.path.join(base, expanded)).replace(LITERAL_DOLLAR, "$")
+        file = file.replace(LITERAL_DOLLAR, "$")
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                msgs = msgs + [fh.read()]
+        except OSError as e:
+            raise Deny("identity", "cannot read the commit message file " + file + " (" + type(e).__name__ + ")")
+    text = "\n\n".join(m.strip("\n") for m in msgs)
+    if trailers:
+        text = text.rstrip("\n") + "\n\n" + "\n".join(trailers)
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    if any(ln.startswith("Claude-Session:") for ln in lines):
+        raise Deny("identity", "the commit message carries a Claude-Session link; drop it")
+    login = os.environ.get("FORGE_LOGIN", "").strip()
+    if not login:
+        raise Deny("identity", "FORGE_LOGIN is not set, so the commit's Agent line cannot be checked")
+    want = re.compile(r"^Agent: paperclip · \S+ · " + re.escape(login) + r"$")
+    if not lines or not want.match(lines[-1]):
+        raise Deny("identity", "the commit message's last line must be " + AGENT_LINE.replace("$FORGE_LOGIN", login))
+
+
+LITERAL_DOLLAR = ""
+
+
+class Word(str):
+    """A token that held a `$` the shell keeps literal (single-quoted or
+    backslash-escaped). It reads as the plain text to every rule; `.lit` keeps
+    those `$` as LITERAL_DOLLAR so expand_message_file leaves them alone."""
+
+
+def lit(tok):
+    return getattr(tok, "lit", tok)
+
+
+def mark_literal_dollars(text):
+    """Swap each `$` the shell will not expand for LITERAL_DOLLAR, tracking
+    quotes the way shlex posix does (sf#1690)."""
+    out, q, i = [], None, 0
+    while i < len(text):
+        c = text[i]
+        if q == "'":
+            q = None if c == "'" else q
+            out.append(LITERAL_DOLLAR if c == "$" else c)
+        elif c == "\\" and i + 1 < len(text):
+            n = text[i + 1]
+            if n == "$":
+                out.append(LITERAL_DOLLAR if q == '"' else "\\" + LITERAL_DOLLAR)
+            else:
+                out.append(c + n)
+            i += 2
+            continue
+        else:
+            if c in "'\"" and q is None:
+                q = c
+            elif c == '"' and q == '"':
+                q = None
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def as_word(tok):
+    if LITERAL_DOLLAR not in tok:
+        return tok
+    w = Word(tok.replace(LITERAL_DOLLAR, "$"))
+    w.lit = tok
+    return w
+
+
+def segments(command, depth=0, strict=False):
+    """Return [(tokens, separator_before)] for each simple-command segment.
+    `strict` raises ValueError on an unbalanced quote instead of falling back
+    to a whitespace split, which can join lines and hide a later command."""
+    if depth >= 5:
+        raise Deny("unparseable", "command substitution nested too deep")
+    if depth == 0 and LITERAL_DOLLAR in command:
+        raise Deny("unparseable", "the command holds U+E000, which the guard reserves")
+    text = command.replace("$(", "\n").replace("`", "\n").replace("(", " ").replace(")", " ")
+    text = mark_literal_dollars(text)
+    lex = shlex.shlex(text, posix=True, punctuation_chars=";&|\n")
+    lex.whitespace = " \t\r"
+    lex.whitespace_split = True
+    lex.commenters = ""
+    try:
+        toks = list(lex)
+    except ValueError:
+        if strict:
+            raise
+        toks = text.split()
+    toks = [as_word(t) for t in toks]
+    # A token holding a newline is a quoted string with a substitution (or an
+    # embedded newline): what follows each newline is inspected as a command.
+    nested = []
+    for t in toks:
+        if "\n" in t:
+            for part in lit(t).split("\n")[1:]:
+                if part.strip():
+                    nested.extend(segments(part, depth + 1, strict))
+    out, cur, sep = [], [], None
+    for t in toks:
+        if t and set(t) <= SEP_CHARS:
+            if cur:
+                out.append((cur, sep))
+            cur, sep = [], t.strip("\n") or "\n"
+        else:
+            cur.append(t)
+    if cur:
+        out.append((cur, sep))
+    out.extend(nested)
+    return out
+
+
+def strip_wrappers(toks, identity=False):
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t in KEYWORDS:
+            i += 1
+            continue
+        base = os.path.basename(t)
+        if base in WRAPPERS:
+            i += 1
+            while i < len(toks) and toks[i].startswith("-"):
+                # `command -v`/`-V` looks a name up and runs nothing (sf#1855).
+                if base == "command" and re.match(r"^-[pvV]*[vV][pvV]*$", toks[i]):
+                    return []
+                if identity and base == "env" and toks[i] in ("-u", "--unset"):
+                    i += 1
+                if base == "sudo" and toks[i] in ("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"):
+                    i += 1
+                i += 1
+            continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):
+            i += 1
+            continue
+        break
+    return toks[i:]
+
+
+def skip_options(args, value_opts, npos=0):
+    """The command after a launcher's options and its npos positional args."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and len(args[i]) > 1:
+        if args[i] == "--":
+            i += 1
+            break
+        i += 2 if args[i] in value_opts else 1
+    return args[i + npos:]
+
+
+def launched(prog, args):
+    """The inner command a launcher runs, or None when prog is no launcher."""
+    if prog in LAUNCHERS:
+        return skip_options(args, *LAUNCHERS[prog])
+    if prog == "uv":
+        rest = skip_options(args, UV_VALUE_OPTS)
+        if rest[:1] == ["run"]:
+            return skip_options(rest[1:], UV_VALUE_OPTS)
+        if rest[:2] == ["tool", "run"]:
+            return skip_options(rest[2:], UV_VALUE_OPTS)
+    return None
+
+
+def shell_command(args):
+    """The STRING of `sh -c STRING` (also -lc, -ec), or None. The value of
+    -o/+o/-O/+O (alone or ending a cluster such as -euo) and of --rcfile or
+    --init-file is skipped, so `bash -o pipefail -c STRING` is still found."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--rcfile", "--init-file"):
+            i += 2
+            continue
+        if a.startswith("--"):
+            i += 1
+            continue
+        if a[:1] not in ("-", "+") or len(a) < 2:
+            return None
+        if a[0] == "-" and "c" in a[1:]:
+            rest = [x for x in args[i + 1:] if not x.startswith("-")]
+            return rest[0] if rest else None
+        i += 2 if a[-1] in "oO" else 1
+    return None
+
+
+def positional(args, value_flags=()):
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in value_flags:
+            skip = True
+            continue
+        if a.startswith("-"):
+            continue
+        out.append(a)
+    return out
+
+
+def rm_path_ok(p):
+    p = expand_home(p)
+    if not p.startswith("/") or "$" in p or any(c in p for c in "*?["):
+        return False
+    parts = [x for x in p.split("/") if x]
+    if ".." in parts or "." in parts:
+        return False
+    for root, depth in WORK_ROOTS:
+        base = [x for x in root.split("/") if x]
+        if parts[:len(base)] == base and len(parts) >= len(base) + depth:
+            return True
+    return False
+
+
+def check_rm(args):
+    forced, paths, flags_done = False, [], False
+    for a in args:
+        if not flags_done and a == "--":
+            flags_done = True
+            continue
+        if not flags_done and a.startswith("--"):
+            if a in ("--recursive", "--force"):
+                forced = True
+            continue
+        if not flags_done and a.startswith("-") and len(a) > 1:
+            if any(c in "rRf" for c in a[1:]):
+                forced = True
+            continue
+        paths.append(a)
+    if forced and (not paths or not all(rm_path_ok(p) for p in paths)):
+        raise Deny(
+            "rm-recursive",
+            "recursive/forced rm outside your work folder: allowed under " + RM_ALLOWED,
+        )
+
+
+def ssh_allowed():
+    return os.environ.get("FLEET_EMPLOYEE") in SSH_EMPLOYEES
+
+
+# Cluster writes belong to the same infra seat (Rico 2026-10-06, sf#1643:
+# Nagatha's box matches the Mac); every other employee is refused the write
+# verbs. Per program: (options that take a value, flag options, write verbs).
+CLUSTER_RULES = {
+    "kubectl": (
+        {
+            "-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server", "--token",
+            "--as", "--as-group", "--as-uid", "--certificate-authority", "--client-certificate", "--client-key",
+            "--tls-server-name", "--request-timeout", "--cache-dir", "--log-file", "-v", "--v",
+        },
+        {"--insecure-skip-tls-verify", "--match-server-version", "--warnings-as-errors", "-h", "--help"},
+        {
+            "apply", "create", "delete", "edit", "patch", "replace", "scale", "drain",
+            "cordon", "uncordon", "taint", "label", "annotate", "rollout", "set", "exec",
+        },
+    ),
+    "helm": (
+        {
+            "-n", "--namespace", "--kube-context", "--kubeconfig", "--kube-apiserver", "--kube-token",
+            "--kube-as-user", "--kube-as-group", "--kube-ca-file", "--kube-tls-server-name",
+            "--registry-config", "--repository-config", "--repository-cache", "--burst-limit", "--qps",
+        },
+        {"--debug", "--kube-insecure-skip-tls-verify", "-h", "--help"},
+        {"install", "upgrade", "uninstall", "rollback", "delete"},
+    ),
+}
+
+
+def cluster_verb(prog, args):
+    """The write verb `args` runs, or None. An option the guard does not know may
+    take a value that hides the verb, so a write verb after one fails closed."""
+    value_opts, flag_opts, verbs = CLUSTER_RULES[prog]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in value_opts:
+            i += 2
+            continue
+        if a.startswith("-") and len(a) > 1:
+            if "=" not in a and a not in flag_opts and any(x in verbs for x in args[i + 1:]):
+                raise Deny("cluster-write", prog + ": unknown option before the verb (" + a + ")")
+            i += 1
+            continue
+        return a if a in verbs else None
+    return None
+
+
+def check_ssh(prog, args):
+    if ssh_allowed():
+        return
+    if prog in SSH_PROGS:
+        raise Deny("ssh-infra-only", prog + " is Nagatha's alone")
+    if prog == "git" and any(a.startswith("ssh://") or re.match(r"^[\w.-]+@[\w.-]+:", a) for a in args):
+        raise Deny("ssh-infra-only", "git over ssh is Nagatha's alone")
+    if prog == "git" and any("core.sshCommand" in a for a in args):
+        raise Deny("ssh-infra-only", "git core.sshCommand is Nagatha's alone")
+    if prog == "rsync":
+        rsh = any(a in ("-e", "--rsh") or a.startswith("--rsh=") or a.startswith("-e") for a in args)
+        remote = any(re.match(r"^[\w.@-]+:(?!:)", a) for a in positional(args, ("-e", "--rsh")))
+        if rsh or remote:
+            raise Deny("ssh-infra-only", "rsync over ssh is Nagatha's alone")
+
+
+def ansible_inventories(args):
+    """Every -i value: `-i F`, `--inventory[-file]=F`, attached `-iF`, and an
+    -i inside a short-option cluster (`-vi F`, `-CiF`)."""
+    out = []
+    for i, a in enumerate(args):
+        if a in ANSIBLE_INV_FLAGS:
+            if i + 1 < len(args):
+                out.append(args[i + 1])
+            continue
+        for f in ANSIBLE_INV_FLAGS:
+            if a.startswith(f + "="):
+                out.append(a[len(f) + 1:])
+        if a.startswith("-") and not a.startswith("--"):
+            for j in range(1, len(a)):
+                ch = a[j]
+                if not ch.isalpha():
+                    break
+                if ch in ANSIBLE_VALUE_SHORT:  # the rest of the cluster, or the next arg, is its value
+                    if ch == "i":
+                        val = a[j + 1:] or (args[i + 1] if i + 1 < len(args) else "")
+                        if val:
+                            out.append(val)
+                    break
+    return out
+
+
+def inventory_is_local(path, cwd):
+    """True (refuse) unless the inventory is a readable file without a local
+    connection, or an inline host list such as "host1," or "a,b". A directory,
+    an unreadable file, or a path the guard cannot find (after a `cd`, say)
+    fails closed: it may set local."""
+    p = norm_path(path, cwd)
+    if not p or not os.path.exists(p):
+        return "," not in path
+    if not os.path.isfile(p):  # a directory, FIFO or device
+        return True
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            return bool(ANSIBLE_LOCAL_RE.search(fh.read()))
+    except OSError:
+        return True
+
+
+def is_check_flag(a):
+    if a in ANSIBLE_DRY:
+        return True
+    if not re.match(r"^-[A-Za-z]+$", a):
+        return False
+    for ch in a[1:]:
+        if ch == "C":
+            return True
+        if ch in ANSIBLE_VALUE_SHORT:
+            return False
+    return False
+
+
+def check_ansible(prog, args, cwd):
+    if ssh_allowed():
+        return
+    if prog in ("ansible-pull", "ansible-console"):
+        raise Deny("ansible-apply", prog + " is Nagatha's alone")
+    for i, a in enumerate(args):
+        if a in ("-clocal", "--connection=local") or (
+            a in ("-c", "--connection") and i + 1 < len(args) and args[i + 1] == "local"
+        ):
+            raise Deny("ansible-apply", "ansible over a local connection is Nagatha's alone")
+        extra = args[i + 1] if a in ("-e", "--extra-vars") and i + 1 < len(args) else (
+            a.split("=", 1)[1] if a.startswith("--extra-vars=") else "")
+        if extra and ANSIBLE_LOCAL_RE.search(extra.replace('"', "").replace("'", "")):
+            raise Deny("ansible-apply", "ansible over a local connection is Nagatha's alone")
+    for inv in ansible_inventories(args):
+        if inventory_is_local(inv, cwd):
+            raise Deny(
+                "ansible-apply",
+                "inventory " + inv + " sets a local connection, is a directory, or cannot be read; "
+                "Nagatha's alone (pass a readable inventory file, or an inline -i host,)",
+            )
+    if not any(is_check_flag(a) for a in args):
+        raise Deny("ansible-apply", "ansible apply is Nagatha's alone; reviewers use --check; " + ANSIBLE_CHECK_LIMIT)
+
+
+def python_module_command(prog, args):
+    """`python -m ansible.cli.<x> ARGS` or `python -m ansible <x> ARGS` as the
+    (ansible-<x>, ARGS) it runs, else None (sf#1437: a reviewer ran
+    `python -m ansible.cli.playbook` on its own box). An unknown ansible
+    module fails closed as plain `ansible`."""
+    if not PYTHON_RE.match(prog):
+        return None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--" or not a.startswith("-") or len(a) < 2:
+            return None  # a script or stdin, not -m
+        if a.startswith("--"):
+            i += 2 if a in PYTHON_VALUE_LONG else 1
+            continue
+        for j in range(1, len(a)):
+            ch = a[j]
+            if ch == "c":
+                return None
+            if ch == "m":
+                val = a[j + 1:]
+                rest = args[i + 1:] if val else args[i + 2:]
+                module = val or (args[i + 1] if i + 1 < len(args) else "")
+                return ansible_module_command(module, rest)
+            if ch in PYTHON_VALUE_SHORT:
+                i += 0 if a[j + 1:] else 1
+                break
+        i += 1
+    return None
+
+
+def ansible_module_command(module, rest):
+    if module == "ansible":
+        sub, rest = (rest[0], rest[1:]) if rest and not rest[0].startswith("-") else ("", rest)
+    elif module.startswith("ansible.cli."):
+        sub = module[len("ansible.cli."):]
+    elif module.startswith("ansible."):
+        sub = ""
+    else:
+        return None
+    return ANSIBLE_CLI_MODULES.get(sub, "ansible"), rest
+
+
+def check_segment(toks, cwd="", depth=0, found=None, command=""):
+    """Check one simple command. `found` collects every executable the segment
+    really runs, launchers followed, for the whole-command rules (db-drop)."""
+    identity_toks = strip_wrappers(toks, identity=True)
+    stripped = strip_wrappers(toks)
+    for t in toks[:len(toks) - len(stripped)]:  # `TMPDIR=x cmd`, `env TMPDIR=x cmd`
+        if t.startswith("TMPDIR="):
+            check_no_tmp_path(t[len("TMPDIR="):], cwd, t)
+    toks = stripped
+    if not toks:
+        return
+    prog = os.path.basename(toks[0])
+    if found is not None:
+        found.add(prog)
+    args = toks[1:]
+    mod = python_module_command(prog, args)
+    if mod:
+        prog, args = mod
+        if found is not None:
+            found.add(prog)
+    inner = launched(prog, args)
+    script = shell_command(args) if prog in SHELLS else None
+    if inner or script is not None:
+        if depth >= LAUNCH_DEPTH:
+            raise Deny("unparseable", "launchers nested too deep")
+        if inner:
+            check_segment(inner, cwd, depth + 1, found, command)
+        if script is not None:
+            check_bash(script, cwd, depth + 1, command)
+    check_ssh(prog, args)
+    check_no_tmp_segment(prog, args, cwd)
+    check_model_gate(prog, args)
+    if prog in ("curl", "wget") and any(FORGE_API_RE.match(re.sub(r"^--url=", "", a)) for a in args):
+        raise Deny("forge-api", FORGE_API_HELP)
+    if identity_toks and os.path.basename(identity_toks[0]) == "git":
+        check_identity(identity_toks[1:], cwd, command)
+    if prog in ANSIBLE_PROGS:
+        check_ansible(prog, args, cwd)
+    elif prog == "rm":
+        check_rm(args)
+    elif prog == "find":
+        if "-delete" in args:
+            raise Deny("find-delete", "find -delete")
+        for i, a in enumerate(args):
+            if a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args) and os.path.basename(args[i + 1]) == "rm":
+                raise Deny("find-delete", "find -exec rm")
+    elif prog == "xargs":
+        rest = strip_wrappers(positional(args, ("-I", "-n", "-P", "-L", "-d", "-E", "-s")))
+        if rest and os.path.basename(rest[0]) == "rm":
+            raise Deny("find-delete", "xargs rm")
+    elif prog == "git":
+        if "push" in args:
+            rest = args[args.index("push") + 1:]
+            for a in rest:
+                if a in ("-f", "--force", "--mirror", "--delete", "-d") or a.startswith("--force-with-lease") or a.startswith("--force-if-includes"):
+                    raise Deny("git-force", "destructive git push flag " + a)
+                if a.startswith("-") and not a.startswith("--") and ("f" in a[1:] or "d" in a[1:]):
+                    raise Deny("git-force", "destructive git push flag " + a)
+            for a in positional(rest, ("-o", "--push-option", "--repo", "--receive-pack", "--exec")):
+                if a.startswith("+") or a.startswith(":"):
+                    raise Deny("git-force", "force/delete refspec " + a)
+    elif prog == "dd":
+        if any(a.startswith("of=") for a in args):
+            raise Deny("disk", "dd of=")
+    elif prog.startswith("mkfs") or prog in ("wipefs", "fdisk", "parted", "shred", "sfdisk", "sgdisk"):
+        raise Deny("disk", prog)
+    elif prog in ("shutdown", "reboot", "halt", "poweroff"):
+        raise Deny("power", prog)
+    elif prog == "systemctl":
+        pos = positional(args)
+        if pos and pos[0] in ("stop", "disable", "mask", "poweroff", "reboot", "halt", "kill"):
+            raise Deny("power", "systemctl " + pos[0])
+    elif prog in CLUSTER_RULES and not ssh_allowed():
+        verb = cluster_verb(prog, args)
+        if verb:
+            raise Deny("cluster-write", prog + " " + verb)
+    elif prog == "argocd" and not ssh_allowed():
+        pos = positional(args)
+        if len(pos) >= 2 and pos[0] == "app" and pos[1] in ("delete", "create", "set", "patch", "rollback", "terminate-op"):
+            raise Deny("cluster-write", "argocd app " + pos[1])
+    elif prog in ("pct", "qm"):
+        pos = positional(args)
+        if pos and pos[0] in ("destroy", "stop", "shutdown", "rollback", "delsnapshot", "restore"):
+            raise Deny("pve-destroy", prog + " " + pos[0])
+    elif prog == "zfs":
+        pos = positional(args)
+        if pos and pos[0] in ("destroy", "rollback"):
+            raise Deny("pve-destroy", "zfs " + pos[0])
+    elif prog == "zpool":
+        pos = positional(args)
+        if pos and pos[0] in ("destroy", "remove", "offline", "labelclear"):
+            raise Deny("pve-destroy", "zpool " + pos[0])
+    elif prog in ("chmod", "chown"):
+        recursive = any(
+            a == "--recursive" or (a.startswith("-") and not a.startswith("--") and "R" in a) for a in args
+        )
+        if recursive:
+            for a in positional(args):
+                p = expand_home(a).rstrip("/") or "/"
+                if p in ("/", "/home", HOME, "/etc", "/usr"):
+                    raise Deny("chmod-wide", prog + " -R " + p)
+
+
+DB_PROGS = {"psql", "pg_dump", "pg_dumpall", "pg_restore", "pgcli"}
+# SOF-11744: the only programs a command may run for its quoted heredoc
+# bodies to count as text (they read or publish text and execute none, and
+# write no file: `tee` is out, it writes a body to a file a later command can
+# run; SOF-11481 spec, PR 1909).
+HEREDOC_SAFE_PROGRAMS = {"cat", "printf", "echo", "wc", "set", "forge-post", "paperclipai"}
+# Safe in the command, but never the reader a body is cut for (Bishop's spec
+# keeps `wc -c <<'X'` whole; `cat <<'X' | wc -c` is the allowed shape).
+HEREDOC_PIPE_ONLY = {"wc"}
+# `node` runs any script, so it never joins the safe set. The one exception is
+# open-pr's publisher, the fleet forge CLI, matched as the exact program and
+# script pair (`node ~/fleet/forge/forge pr create --body-file /dev/stdin`):
+# it reads the body as text and executes none of it (SOF-11481).
+HEREDOC_SAFE_NODE_SCRIPTS = {"~/fleet/forge/forge", "$HOME/fleet/forge/forge", "${HOME}/fleet/forge/forge", HOME + "/fleet/forge/forge"}
+# An output redirection: optional fd or `&`, then >, >>, >|, >& or <>, then
+# its target. A body may reach stdout, a pipe or /dev/null, never a file.
+# An fd number only at a word start, as bash reads an IO number: in `cat1>&1`
+# the word is `cat1`, and stripping `1>&1` would leave `cat` (PR 1944 CI 109288).
+HEREDOC_REDIRECT_RE = re.compile(r"(?:(?<![^ \t\n;&|()<>])\d+|&)?(?:>>|>\||>&|<>|>)[ \t]*([^ \t\n;&|()<>]*)")
+HEREDOC_QUIET_TARGETS = {"/dev/null", "/dev/stdout", "/dev/stderr"}
+HEREDOC_OP_RE = re.compile(
+    r"""<<(-?)[ \t]*(?:'([\w.-]+)'|"([\w.-]+)"|\\([\w.-]+)|([\w.-]+))(?=[ \t;&|<>)]|$)"""
+)
+# A whole word the quote check may ignore: "$name", "${name}" or '%s', bounded
+# by start or whitespace and by end, whitespace or ; | & (PR 1944 round 4).
+HEREDOC_SAFE_WORD_RE = re.compile(
+    r"""(?<!\S)(?:"\$[A-Za-z_][A-Za-z0-9_]*"|"\$\{[A-Za-z_][A-Za-z0-9_]*\}"|'%s')(?=[\s;|&]|$)"""
+)
+HEREDOC_CONTINUES = ("|", "|&", "&&", "||", "\\", "(")
+ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# An assignment the whole-command rule accepts: a lowercase name (no bash
+# special variable is lowercase) or the run-id prefix review-pr uses. An
+# allowlist, not a denylist: PATH, BASH_ENV, IFS, LD_* re-point a program, and
+# PS4 runs a $(...) every time `set -x` traces a command (PR 1913 review 107183).
+SAFE_ASSIGN_RE = re.compile(r"^(?:[a-z_][a-z0-9_]*|PAPERCLIP_RUN_ID)=")
+# `set` may only toggle errexit, nounset and pipefail: -x (xtrace) expands PS4
+# and -v echoes input, so any other option is unsafe.
+SAFE_SET_ARG_RE = re.compile(r"^(?:[-+][euo]+|pipefail)$")
+
+
+def opens_group(text):
+    """True when `text` has a backtick, `{`, `}`, or any `(` but the one in
+    `NAME=$(`: a subshell, comsub, group or function body can run a body."""
+    return any(c in text for c in "`{}") or "(" in re.sub(r"[A-Za-z_][A-Za-z0-9_]*=\$\(", "", text)
+
+
+def heredoc_line_inert(line, m):
+    """True when the one heredoc operator `m` on `line` is quoted and nothing
+    on the line can carry the body on to a shell."""
+    if not any(m.group(g) for g in (2, 3, 4)):
+        return False  # an unquoted delimiter: bash substitutes inside the body
+    if line.rstrip().endswith(HEREDOC_CONTINUES):
+        return False  # the pipeline or command continues after the body
+    if ")" in line or opens_group(line):
+        return False  # only `NAME=$(` may open a group: a subshell or comsub word can run the body
+    reader = re.split(r"\$\(|[|;&(]", line[: m.start()])[-1].split()
+    while reader and ASSIGN_RE.match(reader[0]):
+        reader = reader[1:]
+    if reader and reader[0] in HEREDOC_PIPE_ONLY:
+        return False  # wc may count a body piped from cat, never take one itself (SOF-11481 spec)
+    return True
+
+
+PLAIN_EXPANSION_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|\((?!\()")
+
+
+def plain_expansions_only(command):
+    """True when every `$` outside single quotes starts `$name`, `${name}` or a
+    `$(` command substitution (which segments() checks). Any other form can
+    evaluate a captured body again and run a `$(...)` it holds: an array
+    subscript `${a[body]}`, a substring offset `${s:body}`, the prompt operator
+    `${body@P}`, `$((body))` or legacy `$[body]` (PR 1913, SOF-11964, Bishop's
+    B18-B22). Quote-aware: a `'` inside double quotes is not a quote."""
+    state, i = None, 0
+    while i < len(command):
+        c = command[i]
+        if state == "'":
+            if c == "'":
+                state = None
+        elif c == "\\":
+            i += 1
+        elif c == "'" and state is None:
+            state = "'"
+        elif c == '"':
+            state = None if state == '"' else '"'
+        elif c == "$" and not PLAIN_EXPANSION_RE.match(command, i + 1):
+            return False
+        i += 1
+    return True
+
+
+# A printf conversion that stores the count of bytes written: flags, width,
+# precision and length modifiers before the `n` still assign (bash 5.3 probe).
+PRINTF_ASSIGN_RE = re.compile(r"%[-+ #0'I]*(?:\*|\d+)?(?:\.(?:\*|\d+)?)?[hlLqjzt]*n")
+
+
+def printf_cannot_assign(args):
+    """True when a printf with `args` (the tokens after `printf`, quotes
+    already stripped by segments()) assigns no variable: no `-v` argument, a
+    format that is present and literal (no `$`, no backtick, and no newline,
+    which is how segments() leaves a `$(` or backtick inside a quoted word),
+    and no `%n` conversion once every `%%` is removed (review 107906). Any
+    `<` fails closed: an input redirect or heredoc before the format is not in
+    bash's argv, so the token after it is the real format (review 108989)."""
+    if any(t.startswith("-v") or "<" in t for t in args):
+        return False
+    fmt = (args[1:2] if args[:1] == ["--"] else args[:1]) or [None]
+    fmt = fmt[0]
+    if fmt is None or any(c in fmt for c in "$`\n"):
+        return False
+    return not PRINTF_ASSIGN_RE.search(fmt.replace("%%", ""))
+
+
+def only_safe_programs(command):
+    """True when every segment of `command` runs nothing, or a program in
+    HEREDOC_SAFE_PROGRAMS (first word after leading assignments, the bare
+    name only). Wrappers (sudo, env, command), shells, eval, source, a path
+    (`/tmp/cat` may be bash), an assignment to anything but a lowercase name or
+    PAPERCLIP_RUN_ID (PATH, BASH_ENV, IFS, LD_*, PS4 ...), a `set` option
+    other than -e/-u/-o pipefail, or a
+    segment that cannot be parsed all count as unsafe. segments() splits
+    $(...) and backticks into their own segments but not a process
+    substitution, so any `<(` or `>(` is unsafe too (PR 1913 review 107057).
+    `printf -v` assigns a variable (`BASH_CMDS[cat]` re-points cat at bash),
+    so a printf with any `-v` argument is unsafe (review 107081); so does a
+    `%n` conversion (`printf '%n' PATH` sets PATH=0), so a printf whose format
+    holds one, or is missing or dynamic ($ or a backtick), is unsafe too
+    (review 107906). Any output
+    redirection to a file (>, >>, >|, >&, &>, <>, glued or spaced) is unsafe:
+    a body written to a file can be run later; only /dev/null, /dev/stdout,
+    /dev/stderr and fd duplications (2>&1, >&2) stay (SOF-11481 spec).
+    With heredoc operators and `${name}` removed, any quote, backslash, brace,
+    bracket or glob left is unsafe: the checks below read words with quotes
+    stripped and braces unexpanded, which is not what bash runs (PR 1944
+    round 3: `printf '>%n ' PATH`, `printf {%,}n PATH`, `node '~/...'`).
+    Before that check, three whole words are removed, because each is one
+    literal argument with no splitting, globbing or re-evaluation: `"$name"`,
+    `"${name}"` and the printf format `'%s'` (PR 1944 round 4)."""
+    # Per line: HEREDOC_OP_RE's `$` is end of string, so a whole-command sub
+    # kept every operator that was not on the last line.
+    shell = "\n".join(HEREDOC_OP_RE.sub("", line) for line in command.split("\n"))
+    shell = HEREDOC_SAFE_WORD_RE.sub("", shell)
+    shell = re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", "", shell)
+    if any(c in shell for c in "'\"\\{}[]*?"):
+        return False
+    if "<(" in command or ">(" in command:
+        return False
+    if not plain_expansions_only(command):
+        return False
+    for m in HEREDOC_REDIRECT_RE.finditer(command):
+        target = m.group(1)
+        dup = m.group(0).lstrip("0123456789&").startswith(">&") and re.fullmatch(r"\d+-?|-", target)
+        if target not in HEREDOC_QUIET_TARGETS and not dup:
+            return False
+    # Every redirection left is quiet; drop them so `2>&1` is not read as a
+    # background `&` and a program named `1`.
+    command = HEREDOC_REDIRECT_RE.sub(" ", command)
+    try:
+        # Strict: removing a body can leave an unbalanced quote, and the lax
+        # fallback would join lines and hide a later command (PR 1943 review 109264).
+        segs = segments(command, strict=True)
+    except Exception:
+        return False
+    for toks, _ in segs:
+        i = 0
+        while i < len(toks) and ASSIGN_RE.match(toks[i]):
+            if not SAFE_ASSIGN_RE.match(toks[i]):
+                return False
+            i += 1
+        if i < len(toks) and toks[i] == "node":
+            if i + 1 >= len(toks) or toks[i + 1] not in HEREDOC_SAFE_NODE_SCRIPTS:
+                return False
+        elif i < len(toks) and toks[i] not in HEREDOC_SAFE_PROGRAMS:
+            return False
+        if i < len(toks) and toks[i] == "set" and not all(SAFE_SET_ARG_RE.match(t) for t in toks[i + 1:]):
+            return False  # set -x expands PS4, which can run a $(...) (review 107183)
+        if i < len(toks) and toks[i] == "printf" and not printf_cannot_assign(toks[i + 1:]):
+            return False  # printf -v or %n assigns: BASH_CMDS[cat] or PATH (PR 1913 reviews 107081, 107906)
+    return True
+
+
+def inert_heredocs(command):
+    """`command` with the body of every inert heredoc removed, its delimiter
+    lines kept. Bash does no expansion or substitution in a body whose
+    delimiter is quoted ('X', "X", \\X), so it is text, not commands
+    (SOF-11744: review-pr step 7 was refused for a verdict quoting an ansible
+    command). A candidate body: `<<` or `<<-` with a quoted delimiter; one
+    operator on the physical line; the line does not continue past the body
+    (|, |&, &&, ||, \\, a group or comsub word, a comment); and the
+    terminator line exists. The rule is then WHOLE-COMMAND: bodies are
+    removed only when, with the candidate bodies and terminators gone, EVERY
+    program in the command is in HEREDOC_SAFE_PROGRAMS. Checking only the
+    operator's line is not enough, because a sink's output can be run later
+    in the same command (`body=$(cat <<'X' ... X)` then `bash -c "$body"` or
+    `eval "$body"`; `cat <<'X' > s.sh ... X` then `bash s.sh`). Anything the
+    scan cannot follow, or any other program, returns `command` unchanged,
+    today's behaviour. A body with any line that starts with the delimiter
+    but is not exactly it is never inert: inside $( bash 5.3 ends a body
+    early at `X )`, `X<TAB>)`, `X )foo` and more, not a set to enumerate
+    (SOF-12200 probe)."""
+    lines = command.split("\n")
+    out, check, i, state, cont, commented, kept = [], [], 0, None, False, False, False
+    while i < len(lines):
+        line = lines[i]
+        starts_clean = state is None and not cont
+        ops, comment, cont, j = [], False, False, 0
+        while j < len(line):
+            c = line[j]
+            if state == "'":
+                state = None if c == "'" else state
+            elif state in ('"', "$'"):
+                if c == "\\":
+                    j += 1
+                elif c == ("'" if state == "$'" else '"'):
+                    state = None
+                elif state == '"' and (c == "`" or line.startswith("$(", j)):
+                    return command  # a substitution inside quotes: not modelled
+            elif c == "\\":
+                cont = j == len(line) - 1
+                j += 1
+            elif line.startswith("$'", j):
+                state, j = "$'", j + 1
+            elif c in "'\"":
+                state = c
+            elif c == "#" and (j == 0 or line[j - 1] in " \t;&|()<>"):
+                comment = True
+                break
+            elif line.startswith("<<<", j):
+                j += 2
+            elif line.startswith("<<", j):
+                m = HEREDOC_OP_RE.match(line, j)
+                if not m:
+                    return command  # a delimiter shape the scan cannot follow
+                ops.append(m)
+                j = m.end() - 1
+            j += 1
+        out.append(line)
+        check.append(line)
+        commented = commented or comment
+        i += 1
+        if not ops:
+            continue
+        if state is not None or cont:
+            return command
+        if any(not any(m.group(g) for g in (2, 3, 4)) for m in ops):
+            # An unquoted heredoc anywhere: bash joins backslash-newline in its
+            # body before matching the terminator, which this scan does not
+            # model, so where it ends is unknown (PR 1913 review 107035).
+            return command
+        inert = len(ops) == 1 and starts_clean and not comment and heredoc_line_inert(line, ops[0])
+        kept = kept or not inert
+        for m in ops:
+            word = next(g for g in m.groups()[1:] if g)
+            k = i
+            while k < len(lines) and (lines[k].lstrip("\t") if m.group(1) else lines[k]) != word:
+                k += 1
+            if k == len(lines):
+                return command  # unterminated: never inert
+            body = [(ln.lstrip("\t") if m.group(1) else ln) for ln in lines[i:k]]
+            if any(ln != word and ln.startswith(word) for ln in body):
+                # bash 5 ends a body inside $( at `X)`, `X )`, `X<TAB>)` and
+                # more, and the next line runs as a command: no closed set, so
+                # any line that starts with the delimiter means where this body
+                # ends is unknown (SOF-11481, SOF-12200).
+                return command
+            out.extend(lines[k:k + 1] if inert else lines[i:k + 1])
+            check.extend([""] if inert else lines[i:k + 1])
+            i = k + 1
+    if commented or kept:
+        # A comment's apostrophe, or one in a body kept whole, pairs with
+        # another across lines in the quote stripping, and hides a redirect
+        # between them (PR 1943 reviews 109264, 109442).
+        return command
+    if len(out) == len(lines) or not only_safe_programs("\n".join(check)):
+        return command  # no body removed, or some program could run a body later
+    if opens_group("\n".join(check)):
+        return command  # a group opened on ANY line can run the body, not just the operator's (PR 1943 review)
+    return "\n".join(out)
+
+
+def check_bash(command, cwd="", depth=0, whole_command=None):
+    if whole_command is None:
+        whole_command = command
+    # The guard-files and ~/.ssh floors read the ORIGINAL command, every byte:
+    # a body's text can still reach an argument (`cat "$body"`, read, xargs).
+    # Only the command rules below see the bodies stripped (SOF-11481).
+    expanded = command
+    if depth == 0:  # a `bash -c STRING` is checked as before
+        command = inert_heredocs(command)
+    for p in ("~/", "$HOME/", "${HOME}/"):
+        expanded = expanded.replace(p, HOME + "/")
+    squashed = re.sub(r"/(?:\./)+", "/", re.sub(r"/{2,}", "/", expanded))
+    for text in (expanded, squashed):
+        for g in GUARDED:
+            if g in text:
+                raise Deny("guard-files", "names a guard file " + g)
+        if not ssh_allowed() and (SSH_DIR + "/" in text or text.rstrip().endswith(SSH_DIR)):
+            raise Deny("ssh-infra-only", "~/.ssh is Nagatha's alone")
+    progs = []
+    found = set()
+    # Where a path resolves: the hook cwd, moved by each `cd <dir>` earlier in
+    # the same command (`cd clone && ansible-playbook --check -i
+    # inventory/hosts.yml` is the reviewers' normal dry run; `cd ~/.claude &&
+    # printf x > settings.json` must still name the guard file).
+    here = cwd
+    for toks, sep in segments(command):
+        st = strip_wrappers(toks)
+        prog_at = len(toks) - len(st)
+        for k, t in enumerate(toks):
+            m = REDIRECT_RE.match(t)
+            if m:  # an output redirect, glued (`>/tmp/x`) or before its target
+                target = m.group(1) or (toks[k + 1] if k + 1 < len(toks) else "")
+                check_no_tmp_path(target, here, "a redirect to " + target)
+            if k == prog_at and "/" not in t:
+                continue  # a bare program name resolves on PATH, not in the cwd
+            t = re.sub(r"^(?:\d+|&)?[<>]+[&|]?", "", t)  # a redirect glued to its target
+            if not t:
+                continue
+            n = norm_path(t, here)
+            for g in GUARDED:
+                if g.rstrip("/") in n:
+                    raise Deny("guard-files", "names a guard file " + g)
+            check_ssh_path(n)
+        progs.append((os.path.basename(st[0]) if st else "", sep))
+        check_segment(toks, here, depth, found, whole_command)
+        if st and st[0] == "cd" and len(st) == 2 and not st[1].startswith("-"):
+            here = norm_path(st[1], here)
+    if found & DB_PROGS and re.search(r"(DROP\s|TRUNCATE\s|DELETE\s+FROM)", command, re.I):
+        raise Deny("db-drop", "destructive SQL in a psql-family command")
+    for i in range(len(progs) - 1):
+        p, _ = progs[i]
+        nxt, sep = progs[i + 1]
+        if p in ("curl", "wget") and sep in ("|", "|&") and (nxt in ("sh", "bash", "zsh", "dash") or nxt.startswith("python")):
+            raise Deny("pipe-shell", p + " piped into " + nxt)
+
+
+def check_path(p):
+    for g in GUARDED:
+        if g.rstrip("/") in p:
+            raise Deny("guard-files", "writes a guard file " + g)
+    check_ssh_path(p)
+    check_no_tmp_path(p, "", "a write to " + p)
+
+
+def check_ssh_path(p):
+    if not ssh_allowed() and (p == SSH_DIR or p.startswith(SSH_DIR + "/")):
+        raise Deny("ssh-infra-only", "~/.ssh is Nagatha's alone")
+
+
+def main():
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw)
+        tool = data.get("tool_name", "")
+        tin = data.get("tool_input") or {}
+        cwd = str(data.get("cwd") or "")
+    except Exception as e:  # fail open on input we cannot parse, loudly
+        print("bash-guard: could not parse hook input (%s); allowing" % type(e).__name__, file=sys.stderr)
+        return 0
+    try:
+        if tool == "Bash":
+            check_bash(str(tin.get("command", "")), cwd)
+        elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            check_path(norm_path(str(tin.get("file_path") or tin.get("notebook_path") or ""), cwd))
+        elif tool in ("Read", "Grep", "Glob"):
+            check_ssh_path(norm_path(str(tin.get("file_path") or tin.get("path") or ""), cwd))
+    except Deny as d:
+        print(
+            "bash-guard: refused (%s): %s. This box's floor is sf#1221; "
+            "if this is needed, say so on your board issue and set it blocked." % (d.rule, d.reason),
+            file=sys.stderr,
+        )
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

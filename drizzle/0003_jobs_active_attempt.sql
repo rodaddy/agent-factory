@@ -1,0 +1,1 @@
+ALTER TABLE "jobs" ADD COLUMN "active_attempt_id" integer;

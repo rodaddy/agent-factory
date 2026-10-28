@@ -1,0 +1,75 @@
+schema: hosted-app/v1
+
+name: linkedin-automation
+owner: rodaddy
+description: LinkedIn outreach automation, web UI plus worker
+
+image:
+  build:
+    containerfile: Containerfile
+    context: .
+    tag_pattern: "v*"
+
+runtime:
+  port: 8080
+  health:
+    path: /healthz
+    port: 8080
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  env:
+    LOG_LEVEL: info
+  command: []
+  replicas: 1
+  stateless: true
+
+secrets:
+  - name: linkedin-automation-secrets
+    vaultwarden_item: "Example App - app"
+    keys: [SESSION_SECRET, LINKEDIN_COOKIE]
+
+database:
+  cluster: general
+  name: linkedin_automation
+  role: linkedin_automation
+  extensions: []
+  password_item: "Example App - db"
+  env_key: DATABASE_URL
+
+storage:
+  - name: data
+    mount: /var/lib/app
+    size: 5Gi
+
+cron:
+  - name: nightly-sync
+    schedule: "17 3 * * *"
+    command: ["python", "-m", "app.sync"]
+
+config_files:
+  - name: app-config
+    mount: /etc/app/config.yaml
+    path: deploy/config.yaml
+
+hostnames:
+  - host: linkedin.rtech.internal
+    public: false
+
+probe:
+  path: /api/status
+  expect_status: 200
+  expect_body_contains: '"ok":true'
+
+targets:
+  - name: uat
+    overrides:
+      hostnames:
+        - { host: linkedin-uat.rtech.internal, public: false }
+  - name: prod
+    overrides:
+      hostnames:
+        - { host: linkedin.example.net, public: true }
+      runtime:
+        resources:
+          limits: { cpu: "1", memory: 1Gi }

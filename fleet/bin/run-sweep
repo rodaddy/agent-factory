@@ -1,0 +1,225 @@
+#!/usr/bin/env bun
+/**
+ * run-sweep (S1.3, POSTMORTEM L18, W1a F9/R4): find board runs stuck in
+ * `running` and, with --apply, cancel them through the board's own endpoint
+ * (POST /api/heartbeat-runs/:id/cancel, operator-stamped). Never a DB write.
+ *
+ * A `running` row is stale when, aged from startedAt (else createdAt):
+ *   - age > the agent's adapterConfig.timeoutSec + graceSec + 600 s margin; or
+ *   - errorCode is process_detached / process_lost / orphaned_running_run
+ *     (the reaper's own marks) AND age > timeoutSec.
+ * A run is never selected while younger than its agent's timeoutSec, and an
+ * agent with no timeoutSec never has a run selected.
+ *
+ * Reads: GET /companies/:co/live-runs?limit=50. It is the only server-side
+ * status filter (queued/running) Paperclip has; /heartbeat-runs takes only
+ * agentId and limit (max 1000, newest first, no offset), so a run stuck past
+ * the newest 1000 rows would be invisible there. live-runs caps at 50 and has
+ * no next page, so a full page fails loud ("listing truncated", exit 1)
+ * rather than report a partial sweep. live-runs carries no errorCode, so a
+ * run inside the detached band is re-read with GET /heartbeat-runs/:id.
+ * GET /agents/:id for each agent with a running row; a 404 skips that agent's
+ * runs with a warning and counts them.
+ *
+ * Usage: run-sweep [--dry-run | --apply] [--max-cancel N]
+ *   --dry-run is the default. --max-cancel (default 10) caps cancels per
+ *   --apply run, oldest stale run first; the rest are listed, not cancelled.
+ * Stdout: one `stale <id> agent=<name> issue=<id> age=<s>s reason=<r>` line
+ * per stale run, then `run-sweep: <n> stale of <m> running (<mode>)`.
+ *
+ * Env: PAPERCLIP_API_URL (default http://127.0.0.1:3100),
+ *      PAPERCLIP_BOARD_TOKEN or PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID.
+ * Exit: 0 done; 1 a listing/lookup API error, a truncated listing, any failed
+ * cancel, or stale runs left over --max-cancel; 3 bad usage or missing env.
+ * The key never reaches argv, stdout or stderr.
+ */
+
+const USAGE = "usage: run-sweep [--dry-run | --apply] [--max-cancel N]";
+const MARGIN_SEC = 600;
+const LIVE_PAGE = 50;
+const DETACHED = new Set(["process_detached", "process_lost", "orphaned_running_run"]);
+
+interface Run {
+	id: string;
+	agentId: string;
+	status: string;
+	startedAt?: string | null;
+	createdAt?: string | null;
+	errorCode?: string | null;
+	issueId?: string | null;
+	agentName?: string | null;
+	contextSnapshot?: { issueId?: string } | null;
+}
+
+interface Agent {
+	name?: string;
+	adapterConfig?: { timeoutSec?: number; graceSec?: number } | null;
+}
+
+class HttpError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+	) {
+		super(message);
+	}
+}
+
+function usage(): never {
+	console.error(USAGE);
+	process.exit(3);
+}
+
+let apply = false;
+let modeSet = false;
+let maxCancel = 10;
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+	const a = argv[i] ?? "";
+	if (a === "--dry-run" || a === "--apply") {
+		if (modeSet) usage();
+		modeSet = true;
+		apply = a === "--apply";
+	} else if (a === "--max-cancel" || a.startsWith("--max-cancel=")) {
+		const v = a === "--max-cancel" ? argv[++i] : a.slice("--max-cancel=".length);
+		if (!v || !/^[1-9]\d*$/.test(v)) usage();
+		maxCancel = Number(v);
+	} else {
+		usage();
+	}
+}
+const base = (process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100").replace(/\/+$/, "");
+const token = process.env.PAPERCLIP_BOARD_TOKEN || process.env.PAPERCLIP_API_KEY;
+const co = process.env.PAPERCLIP_COMPANY_ID;
+if (!token || !co) {
+	console.error(
+		`run-sweep: PAPERCLIP_COMPANY_ID and PAPERCLIP_BOARD_TOKEN or PAPERCLIP_API_KEY are required; ${USAGE}`,
+	);
+	process.exit(3);
+}
+
+async function call<T>(method: "GET" | "POST", path: string): Promise<T> {
+	let r: Response;
+	try {
+		r = await fetch(`${base}/api${path}`, {
+			method,
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: method === "POST" ? "{}" : undefined,
+			signal: AbortSignal.timeout(20_000),
+		});
+	} catch (e) {
+		throw new Error(`board unreachable at ${base}: ${(e as Error).message}`);
+	}
+	if (!r.ok) throw new HttpError(`${method} ${path} -> ${r.status}`, r.status);
+	return (await r.json()) as T;
+}
+
+function firstLine(e: unknown): string {
+	return (e as Error).message.split("\n")[0] ?? "";
+}
+
+function timeoutOf(agent: Agent): number {
+	return Number(agent.adapterConfig?.timeoutSec) || 0;
+}
+
+function limitOf(agent: Agent): number {
+	return timeoutOf(agent) + (Number(agent.adapterConfig?.graceSec) || 0) + MARGIN_SEC;
+}
+
+/** Why `run` is stale, or null when it is kept. `run.errorCode` must be read. */
+function staleReason(run: Run, agent: Agent, now: number): string | null {
+	const timeout = timeoutOf(agent);
+	if (timeout <= 0) return null;
+	const age = ageSec(run, now);
+	if (age === null || age <= timeout) return null;
+	const limit = limitOf(agent);
+	if (age > limit) return `age>${limit}s`;
+	if (run.errorCode && DETACHED.has(run.errorCode)) return run.errorCode;
+	return null;
+}
+
+/** True when only errorCode decides: past timeout, inside grace+margin. */
+function inDetachedBand(run: Run, agent: Agent, now: number): boolean {
+	const timeout = timeoutOf(agent);
+	const age = ageSec(run, now);
+	return timeout > 0 && age !== null && age > timeout && age <= limitOf(agent);
+}
+
+function ageSec(run: Run, now: number): number | null {
+	const t = Date.parse(run.startedAt || run.createdAt || "");
+	return Number.isNaN(t) ? null : Math.floor((now - t) / 1000);
+}
+
+function plural(n: number, word: string): string {
+	return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+async function main(): Promise<number> {
+	const now = Date.now();
+	const live = await call<Run[]>("GET", `/companies/${co}/live-runs?limit=${LIVE_PAGE}`);
+	if (live.length >= LIVE_PAGE) {
+		throw new Error(
+			`listing truncated: live-runs returned ${live.length} rows, its cap, and has no next page; nothing cancelled`,
+		);
+	}
+	const running = live.filter((r) => r.status === "running");
+	const agents = new Map<string, Agent>();
+	const missing = new Set<string>();
+	for (const id of new Set(running.map((r) => r.agentId))) {
+		try {
+			agents.set(id, await call<Agent>("GET", `/agents/${encodeURIComponent(id)}`));
+		} catch (e) {
+			if (!(e instanceof HttpError && e.status === 404)) throw e;
+			missing.add(id);
+			console.error(`run-sweep: warning: agent ${id} not found; skipping its runs`);
+		}
+	}
+	const skipped = running.filter((r) => missing.has(r.agentId)).length;
+	const stale: { run: Run; agent: Agent; reason: string }[] = [];
+	for (const run of running) {
+		const agent = agents.get(run.agentId);
+		if (!agent) continue;
+		const full = inDetachedBand(run, agent, now)
+			? { ...run, ...(await call<Run>("GET", `/heartbeat-runs/${encodeURIComponent(run.id)}`)) }
+			: run;
+		const reason = staleReason(full, agent, now);
+		if (reason) stale.push({ run: full, agent, reason });
+	}
+	stale.sort((a, b) => (ageSec(b.run, now) ?? 0) - (ageSec(a.run, now) ?? 0));
+	let cancelled = 0;
+	let failed = 0;
+	let overCap = 0;
+	for (const { run, agent, reason } of stale) {
+		const issue = run.issueId ?? run.contextSnapshot?.issueId ?? "-";
+		console.log(
+			`stale ${run.id} agent=${agent.name ?? run.agentName ?? run.agentId} issue=${issue} age=${ageSec(run, now)}s reason=${reason}`,
+		);
+		if (!apply) continue;
+		if (cancelled + failed >= maxCancel) {
+			overCap++;
+			continue;
+		}
+		try {
+			await call("POST", `/heartbeat-runs/${encodeURIComponent(run.id)}/cancel`);
+			cancelled++;
+		} catch (e) {
+			failed++;
+			console.error(`run-sweep: cancel ${run.id} failed: ${firstLine(e)}`);
+		}
+	}
+	const parts = apply ? [`cancelled ${cancelled}`] : ["dry run"];
+	if (failed) parts.push(`${failed} failed`);
+	if (overCap) parts.push(`${overCap} over --max-cancel ${maxCancel}`);
+	const skip = skipped
+		? `; skipped ${plural(skipped, "run")} of ${plural(missing.size, "missing agent")}`
+		: "";
+	console.log(`run-sweep: ${stale.length} stale of ${running.length} running (${parts.join(", ")})${skip}`);
+	return failed || overCap ? 1 : 0;
+}
+
+try {
+	process.exit(await main());
+} catch (e) {
+	console.error(`run-sweep: ${firstLine(e)}`);
+	process.exit(1);
+}

@@ -1,0 +1,26 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Every test run writes its console, junit, and summary here (scripts/test-run.ts,
+# sf#500). The record is local to the run; nothing under it is tracked.
+_reports/test-runs/
+
+
+# qmd is global: the librarian indexes this repo from the Development root
+# (Rico, 2026-08-29, sf#456). Nothing under .qmd/ is tracked.
+.qmd/
+
+# Generated hook shims: install.sh writes them, _githooks/ holds the source
+# (Development#432).
+_githooks/installed/
+
+# Added by ggshield
+.cache_ggshield

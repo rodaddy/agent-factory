@@ -1,0 +1,89 @@
+export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST = [
+    // Runtime capability authentication is independently checked by the controller.
+    { method: "POST", path: /^\/runtime-tools\/github\/credentials$/ },
+    // Identity, inbox, agent self-management
+    { method: "GET", path: /^\/api\/agents\/me$/ },
+    { method: "GET", path: /^\/api\/agents\/me\/inbox-lite$/ },
+    { method: "GET", path: /^\/api\/agents\/me\/inbox\/mine$/ },
+    { method: "GET", path: /^\/api\/agents\/[^/]+$/ },
+    { method: "GET", path: /^\/api\/agents\/[^/]+\/skills$/ },
+    { method: "POST", path: /^\/api\/agents\/[^/]+\/skills\/sync$/ },
+    { method: "PATCH", path: /^\/api\/agents\/[^/]+\/instructions-path$/ },
+    // Read-only schema discovery for validated control-plane requests.
+    { method: "GET", path: /^\/api\/openapi\.json$/ },
+    // Company-level reads used to discover work and context
+    { method: "GET", path: /^\/api\/companies\/[^/]+$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/dashboard$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/agents$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/issues$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/projects$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/goals$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/org$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/approvals$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/routines$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
+    { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
+    { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
+    // Task-bound email actions. Company, inbox ownership, task/run authority,
+    // and action policies are enforced by the controller; mailbox setup stays denied.
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/inboxes$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/tasks\/[^/]+$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/deliveries\/[^/]+$/ },
+    { method: "POST", path: /^\/api\/companies\/[^/]+\/email\/send$/ },
+    // Issue lifecycle: read context, checkout, update, comment, document, release
+    { method: "GET", path: /^\/api\/issues\/[^/]+$/ },
+    { method: "GET", path: /^\/api\/issues\/[^/]+\/heartbeat-context$/ },
+    { method: "GET", path: /^\/api\/issues\/[^/]+\/comments(?:\/[^/]+)?$/ },
+    { method: "POST", path: /^\/api\/issues\/[^/]+\/comments$/ },
+    { method: "GET", path: /^\/api\/issues\/[^/]+\/documents(?:\/[^/]+)?$/ },
+    { method: "GET", path: /^\/api\/issues\/[^/]+\/documents\/[^/]+\/revisions$/ },
+    { method: "PUT", path: /^\/api\/issues\/[^/]+\/documents\/[^/]+$/ },
+    { method: "POST", path: /^\/api\/issues\/[^/]+\/checkout$/ },
+    { method: "POST", path: /^\/api\/issues\/[^/]+\/release$/ },
+    { method: "PATCH", path: /^\/api\/issues\/[^/]+$/ },
+    { method: "GET", path: /^\/api\/issues\/[^/]+\/approvals$/ },
+    // Files: the queue encodes binary bodies; HTTP/2 carries the same bytes directly.
+    { method: "GET", path: /^\/api\/issues\/[^/]+\/attachments$/ },
+    { method: "POST", path: /^\/api\/companies\/[^/]+\/issues\/[^/]+\/attachments$/ },
+    { method: "GET", path: /^\/api\/attachments\/[^/]+\/content$/ },
+    // Work products: publish branch/commit/artifact metadata for completed work.
+    { method: "GET", path: /^\/api\/issues\/[^/]+\/work-products$/ },
+    { method: "POST", path: /^\/api\/issues\/[^/]+\/work-products$/ },
+    { method: "PATCH", path: /^\/api\/work-products\/[^/]+$/ },
+    // Issue-thread interactions (create, resolve, verdict, and withdraw)
+    { method: "GET", path: /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+)?$/ },
+    { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions$/ },
+    { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions\/[^/]+\/(?:accept|reject|respond|verdicts|withdraw)$/ },
+    // Subtasks / delegation
+    { method: "POST", path: /^\/api\/companies\/[^/]+\/issues$/ },
+    // Hiring (paperclip-create-agent skill): adapter/icon discovery, comparing
+    // existing agent configs, submitting the hire request, and linking the
+    // resulting approval to its source issue. Direct agent creation
+    // (POST /api/companies/:id/agents) stays denied — hires must go through the
+    // approval-gated agent-hires endpoint, which the server still permission-checks.
+    { method: "GET", path: /^\/llms\/agent-configuration\.txt$/ },
+    { method: "GET", path: /^\/llms\/agent-configuration\/[^/]+\.txt$/ },
+    { method: "GET", path: /^\/llms\/agent-icons\.txt$/ },
+    { method: "GET", path: /^\/api\/companies\/[^/]+\/agent-configurations$/ },
+    { method: "POST", path: /^\/api\/companies\/[^/]+\/agent-hires$/ },
+    { method: "POST", path: /^\/api\/issues\/[^/]+\/approvals$/ },
+    // Approvals (request, read, comment)
+    { method: "GET", path: /^\/api\/approvals\/[^/]+$/ },
+    { method: "GET", path: /^\/api\/approvals\/[^/]+\/issues$/ },
+    { method: "GET", path: /^\/api\/approvals\/[^/]+\/comments$/ },
+    { method: "POST", path: /^\/api\/approvals\/[^/]+\/comments$/ },
+    { method: "POST", path: /^\/api\/companies\/[^/]+\/approvals$/ },
+    // Execution workspaces and runtime services (start/stop/restart dev servers)
+    { method: "GET", path: /^\/api\/execution-workspaces\/[^/]+$/ },
+    { method: "POST", path: /^\/api\/execution-workspaces\/[^/]+\/runtime-services\/(?:start|stop|restart)$/ },
+    // Routines (agents manage their own routines and triggers)
+    { method: "GET", path: /^\/api\/routines\/[^/]+$/ },
+    { method: "GET", path: /^\/api\/routines\/[^/]+\/runs$/ },
+    { method: "POST", path: /^\/api\/companies\/[^/]+\/routines$/ },
+    { method: "PATCH", path: /^\/api\/routines\/[^/]+$/ },
+    { method: "POST", path: /^\/api\/routines\/[^/]+\/run$/ },
+    { method: "POST", path: /^\/api\/routines\/[^/]+\/triggers$/ },
+    { method: "PATCH", path: /^\/api\/routine-triggers\/[^/]+$/ },
+    { method: "DELETE", path: /^\/api\/routine-triggers\/[^/]+$/ },
+];
+// Keep the public alias for callers selecting the HTTP/2 transport.

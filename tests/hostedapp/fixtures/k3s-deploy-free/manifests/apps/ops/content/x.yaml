@@ -1,0 +1,8 @@
+# A nested app file: any depth under apps/<slug>/ belongs to <slug>.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata: { name: ops-content, namespace: ops }
+spec:
+  routes:
+    - kind: Rule
+      match: Host(`ops.example.test`)

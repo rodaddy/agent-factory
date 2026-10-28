@@ -1,0 +1,10 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost
+spec:
+  template:
+    spec:
+      containers:
+        - name: bifrost
+          image: maximhq/bifrost:v2.0.0

@@ -1,0 +1,89 @@
+#!/usr/bin/env bun
+/**
+ * ensure-labels: the company labels `tier-0`..`tier-5`
+ * (tier-0 is infra, Rico 2026-10-07) and `priority` on the Paperclip board. Lists them (GET
+ * /api/companies/:co/labels) and, with --apply, creates each missing one (POST
+ * same path, {name, color}). Idempotent: an existing label is never touched.
+ *
+ * Usage: ensure-labels [--dry-run | --apply]   (--dry-run is the default)
+ * Stdout: `<name> <id>` per label that exists (or was created), `<name> missing`
+ * per label a dry run would create, then one summary line. Paste the tier ids
+ * into the forge-pr plugin config as `tierLabels: { "tier-1": "<id>", ... }`.
+ *
+ * Env: PAPERCLIP_API_URL (default http://127.0.0.1:3100),
+ *      PAPERCLIP_BOARD_TOKEN or PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID.
+ * Exit: 0 done; 1 an API error; 3 bad usage or missing env.
+ * The key never reaches argv, stdout or stderr.
+ */
+
+const USAGE = "usage: ensure-labels [--dry-run | --apply]";
+const WANT: [string, string][] = [
+	["tier-0", "#000000"],
+	["tier-1", "#b60205"],
+	["tier-2", "#d93f0b"],
+	["tier-3", "#fbca04"],
+	["tier-4", "#0e8a16"],
+	["tier-5", "#c5def5"],
+	["priority", "#5319e7"],
+];
+
+const argv = process.argv.slice(2);
+if (argv.length > 1 || (argv[0] && argv[0] !== "--dry-run" && argv[0] !== "--apply")) {
+	console.error(USAGE);
+	process.exit(3);
+}
+const apply = argv[0] === "--apply";
+const base = (process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100").replace(/\/+$/, "");
+const token = process.env.PAPERCLIP_BOARD_TOKEN || process.env.PAPERCLIP_API_KEY;
+const co = process.env.PAPERCLIP_COMPANY_ID;
+if (!token || !co) {
+	console.error(
+		`ensure-labels: PAPERCLIP_COMPANY_ID and PAPERCLIP_BOARD_TOKEN or PAPERCLIP_API_KEY are required; ${USAGE}`,
+	);
+	process.exit(3);
+}
+
+interface Label {
+	id: string;
+	name: string;
+}
+
+async function call<T>(method: "GET" | "POST", body?: unknown): Promise<T> {
+	const path = `/companies/${encodeURIComponent(co ?? "")}/labels`;
+	let r: Response;
+	try {
+		r = await fetch(`${base}/api${path}`, {
+			method,
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: body === undefined ? undefined : JSON.stringify(body),
+			signal: AbortSignal.timeout(20_000),
+		});
+	} catch (e) {
+		throw new Error(`board unreachable at ${base}: ${(e as Error).message}`);
+	}
+	if (!r.ok) throw new Error(`${method} ${path} -> ${r.status}`);
+	return (await r.json()) as T;
+}
+
+async function main(): Promise<number> {
+	const have = new Map((await call<Label[]>("GET")).map((l) => [l.name, l.id]));
+	let missing = 0;
+	for (const [name, color] of WANT) {
+		let id = have.get(name);
+		if (!id) {
+			missing++;
+			if (apply) id = (await call<Label>("POST", { name, color })).id;
+		}
+		console.log(id ? `${name} ${id}` : `${name} missing`);
+	}
+	const mode = apply ? `created ${missing}` : "dry run";
+	console.log(`ensure-labels: ${missing} of ${WANT.length} missing (${mode})`);
+	return 0;
+}
+
+try {
+	process.exit(await main());
+} catch (e) {
+	console.error(`ensure-labels: ${(e as Error).message.split("\n")[0]}`);
+	process.exit(1);
+}

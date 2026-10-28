@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""pr-review-stats: PR size against review speed, so the 1200-line rule can be
+watched and one big PR compared with a stack of small ones (Rico 2026-10-08).
+It only reads Forge.
+
+Usage: pr-review-stats --repo <owner/repo> [--repo ...] [--since YYYY-MM-DD] [--json]
+
+For each PR closed (merged or not) since --since (default 14 days ago):
+  added            added lines outside docs and lockfiles; deletions do not count
+  slices           whole files in API order, at most 400 added lines per slice
+  open_to_merge_h  hours from open to merge (null when not merged)
+  first_verdict_h  hours from open to the first comment by an `sf-` (company)
+                   login carrying a line `verdict: ...`; the `factory` CI bot
+                   answers within a minute, so it is left out
+  fixfirst_rounds  verdict comments by `sf-` logins or `factory` whose verdict
+                   is fix-first
+  head_pushes      commits on the PR (null when Forge cannot list them)
+  group            the base when it is not the default branch (stacked), else
+                   the first issues/<n> in the body, else the PR number
+  stack_id         the root PR of the base chain; a stack shares one
+  stack_whole      the root targets the default branch; a stack cut by the
+                   window is left out of the single-against-stack table
+--json prints one JSON line per PR. Otherwise: a table by size bucket, a table
+of single 801-1200 PRs against stacks summing to 801-1200, and the share of PRs
+over 800 added lines.
+
+Env: FORGEJO_TOKEN (required), FORGEJO_API_URL (default
+https://forge.example.internal/api/v1).
+Exit: 0 read; 2 bad usage or missing env; 3 Forge error (unreachable, non-2xx,
+not JSON, too many pages). The token never reaches argv, stdout or stderr.
+"""
+import datetime as dt
+import json
+import os
+import re
+import statistics
+import sys
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+PAGE = 50
+MAX_PAGES = 50
+SLICE = 400
+DOCS = (".md", ".mdx", ".markdown", ".txt", ".rst", ".adoc")
+LOCKS = {"bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+         "uv.lock", "poetry.lock", "Cargo.lock", "Gemfile.lock", "go.sum",
+         "composer.lock", "flake.lock"}
+VERDICT = re.compile(r"^\s*verdict:\s*(\S+)", re.I | re.M)
+ISSUE = re.compile(r"issues/(\d+)")
+BUCKETS = (("<=400", 0, 400), ("401-800", 401, 800), ("801-1200", 801, 1200), (">1200", 1201, None))
+SECRETS = []
+
+
+def scrub(text):
+    text = str(text)
+    for s in SECRETS:
+        text = text.replace(s, "***")
+    return text
+
+
+def die(msg, code):
+    sys.stderr.write(f"pr-review-stats: {scrub(msg)}\n")
+    sys.exit(code)
+
+
+def ts(s):
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
+
+
+def hours(a, b):
+    return None if a is None or b is None else round((b - a).total_seconds() / 3600, 1)
+
+
+class Forge:
+    def __init__(self):
+        self.api = (os.environ.get("FORGEJO_API_URL") or "https://forge.example.internal/api/v1").rstrip("/")
+        self.token = os.environ.get("FORGEJO_TOKEN")
+        if not self.token:
+            die("set FORGEJO_TOKEN", 2)
+        SECRETS.append(self.token)
+
+    def get(self, path, soft=False):
+        req = urllib.request.Request(f"{self.api}{path}", method="GET", headers={
+            "Accept": "application/json", "Authorization": f"token {self.token}"})
+        where = path.split("?")[0]
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if soft:
+                return None
+            detail = e.read().decode("utf-8", "replace")[:200] if e.fp else ""
+            die(f"forge refused {where}: HTTP {e.code}: {detail}", 3)
+        except OSError as e:
+            die(f"forge unreachable at {self.api}: {type(e).__name__}", 3)
+        try:
+            return json.loads(raw)
+        except ValueError:
+            die(f"forge {where} answered with something that is not JSON", 3)
+
+    def pages(self, path, key, stop=None, soft=False):
+        """Every item, page by page, until an empty page or one with no new key.
+        soft: None when the first page is refused instead of exit 3."""
+        seen = {}
+        sep = "&" if "?" in path else "?"
+        for n in range(1, MAX_PAGES + 1):
+            items = self.get(f"{path}{sep}page={n}&limit={PAGE}", soft=soft and n == 1)
+            if items is None and soft and n == 1:
+                return None
+            if not isinstance(items, list):
+                die(f"forge {path.split('?')[0]} did not return a list", 3)
+            new = [i for i in items if isinstance(i, dict) and key(i) not in seen]
+            for i in new:
+                seen[key(i)] = i
+            if not new or (stop and all(stop(i) for i in new)):
+                return list(seen.values())
+        die(f"forge {path.split('?')[0]} has more than {MAX_PAGES} pages", 3)
+
+
+def counted(name):
+    base = name.rsplit("/", 1)[-1]
+    return not name.lower().endswith(DOCS) and base not in LOCKS
+
+
+def slices(files):
+    n, cur = 0, 0
+    for f in files:
+        a = f["additions"]
+        if n == 0 or cur + a > SLICE:
+            n, cur = n + 1, 0
+        cur += a
+    return n
+
+
+def stats(forge, repo, since):
+    r = f"/repos/{repo}"
+    default = (forge.get(r) or {}).get("default_branch") or "main"
+    old = lambda p: (ts(p.get("updated_at")) or since) < since  # noqa: E731
+    pulls = [p for p in forge.pages(f"{r}/pulls?state=closed&sort=recentupdate", lambda p: p.get("number"), old)
+             if ts(p.get("closed_at")) and ts(p["closed_at"]) >= since]
+    # A head on the default branch or in a fork is no stack parent: every PR into
+    # main would hop to it.
+    by_head = {h.get("ref"): p for p in pulls for h in [p.get("head") or {}]
+               if h.get("ref") != default and (h.get("repo") or {}).get("full_name", repo) == repo}
+
+    def one(p):
+        n, base = p["number"], (p.get("base") or {}).get("ref")
+        files = [{"additions": int(f.get("additions") or 0)}
+                 for f in forge.pages(f"{r}/pulls/{n}/files", lambda f: f.get("filename"))
+                 if counted(f.get("filename") or "")]
+        opened = ts(p.get("created_at"))
+        # factory/pr-review posts one verdict line per diff chunk: any fix-first wins.
+        verdicts = [(ts(c.get("created_at")), "fix-first" if "fix-first" in vs else vs[0], login)
+                    for c in forge.pages(f"{r}/issues/{n}/comments", lambda c: c.get("id"))
+                    for login in [((c.get("user") or {}).get("login") or "")]
+                    if login.startswith("sf-") or login == "factory"
+                    for vs in [[v.lower() for v in VERDICT.findall(c.get("body") or "")]] if vs]
+        verdicts.sort(key=lambda v: v[0])
+        # The CI bot answers within a minute; reviewer speed is the company's first verdict.
+        company = [v for v in verdicts if v[2].startswith("sf-")]
+        root, hops = p, 0
+        while (root.get("base") or {}).get("ref") in by_head and hops < len(pulls):
+            root, hops = by_head[root["base"]["ref"]], hops + 1
+        issue = ISSUE.search(p.get("body") or "")
+        # Forge answers 500 for the commits of a PR whose head branch is gone.
+        commits = forge.pages(f"{r}/pulls/{n}/commits", lambda c: c.get("sha"), soft=True)
+        return {
+            "repo": repo, "number": n,
+            "added": sum(f["additions"] for f in files), "slices": slices(files),
+            "opened_at": p.get("created_at"), "merged_at": p.get("merged_at"),
+            "open_to_merge_h": hours(opened, ts(p.get("merged_at"))),
+            "first_verdict_h": hours(opened, company[0][0]) if company else None,
+            "fixfirst_rounds": sum(v == "fix-first" for _, v, _ in verdicts),
+            "head_pushes": None if commits is None else len(commits),
+            "group": base if base != default else issue.group(1) if issue else str(n),
+            "stack_id": root["number"],
+            # False when the root's parent closed before --since or is still open.
+            "stack_whole": (root.get("base") or {}).get("ref") == default,
+        }
+
+    # Four reads per PR; a pool keeps a two-week window to about a minute.
+    # die() in a worker raises SystemExit, which result() re-raises here.
+    with ThreadPoolExecutor(8) as pool:
+        return list(pool.map(one, sorted(pulls, key=lambda p: p["number"])))
+
+
+def med(xs):
+    xs = [x for x in xs if x is not None]
+    return f"{statistics.median(xs):.1f}" if xs else "-"
+
+
+def bucket(added):
+    return next(name for name, lo, hi in BUCKETS if added >= lo and (hi is None or added <= hi))
+
+
+def report(rows):
+    print(f"{'added':<10} {'count':>5} {'open_to_merge_h':>16} {'first_verdict_h':>16} {'fixfirst':>9}")
+    for name, _, _ in BUCKETS:
+        b = [x for x in rows if bucket(x["added"]) == name]
+        print(f"{name:<10} {len(b):>5} {med(x['open_to_merge_h'] for x in b):>16} "
+              f"{med(x['first_verdict_h'] for x in b):>16} {med(x['fixfirst_rounds'] for x in b):>9}")
+    changes = {}
+    for x in rows:
+        changes.setdefault((x["repo"], x["stack_id"]), []).append(x)
+    print(f"\n{'change':<16} {'count':>5} {'wall_h':>8} {'fixfirst':>9}")
+    for kind, single in (("single", True), ("stack", False)):
+        picked = [c for c in changes.values() if (len(c) == 1) == single and all(x["stack_whole"] for x in c)
+                  and 801 <= sum(x["added"] for x in c) <= 1200]
+        walls = [hours(min(ts(x["opened_at"]) for x in c), max(ts(x["merged_at"]) for x in c))
+                 if all(x["merged_at"] for x in c) else None for c in picked]
+        print(f"{kind + ' 801-1200':<16} {len(picked):>5} {med(walls):>8} "
+              f"{med(sum(x['fixfirst_rounds'] for x in c) for c in picked):>9}")
+    big = sum(x["added"] > 800 for x in rows)
+    print(f"\nPRs over 800 added lines: {big}/{len(rows)} ({round(100 * big / len(rows)) if rows else 0}%)")
+
+
+def main(argv):
+    repos, since, as_json, i = [], None, False, 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--json":
+            as_json, i = True, i + 1
+        elif a in ("--repo", "--since") and i + 1 < len(argv):
+            if a == "--repo":
+                repos.append(argv[i + 1])
+            else:
+                since = argv[i + 1]
+            i += 2
+        else:
+            die(f"usage: pr-review-stats --repo <owner/repo> [--since YYYY-MM-DD] [--json]; got {a}", 2)
+    if not repos or not all(re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", r) for r in repos):
+        die("usage: give --repo <owner/repo> at least once", 2)
+    try:
+        day = dt.date.fromisoformat(since) if since else dt.date.today() - dt.timedelta(days=14)
+    except ValueError:
+        die(f"usage: --since takes YYYY-MM-DD, got {since}", 2)
+    start = dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
+    forge = Forge()
+    rows = [x for repo in repos for x in stats(forge, repo, start)]
+    if as_json:
+        for x in rows:
+            print(json.dumps(x))
+    else:
+        report(rows)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)

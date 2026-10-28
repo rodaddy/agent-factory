@@ -1,0 +1,16 @@
+flowchart TB
+  FJ["Forgejo<br/>issues · PRs · pushes"] -->|"signed webhook<br/>POST /hooks/forgejo"| HK["src/hooks"]
+  SW["15-minute sweep<br/>src/service-cycle.ts"] --> RC
+  HK --> RC["src/reconcile<br/>pass · dispatch-pass"]
+  RC <--> PG[("PostgreSQL<br/>src/db · drizzle/")]
+  RC --> TPL["src/templates<br/>allowlisted job templates<br/>enabled per repo in config"]
+  TPL -->|"rendered job body"| RUN["src/runner<br/>disposable runner boxes"]
+  RUN --> RES["src/results<br/>verify · publish"]
+  RES -->|"comments, branches, checks"| FJ
+  subgraph Company["fleet/ agent company"]
+    ADM["fleet/admission<br/>company-budget kill switch<br/>review rounds"] --> PAIR["Review pair<br/>Anthropic + GPT seats<br/>fleet/agents"]
+    PAIR --> MG["merge gate<br/>fleet/skills/merge-pr/bin/merge-check"]
+  end
+  FJ -->|"PR opened"| ADM
+  MG -->|"same-head approvals + gate pass → merge"| FJ
+  PG --> ST["status surface<br/>/ · /status.json · /healthz · /metrics"]

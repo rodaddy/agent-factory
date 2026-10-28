@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""pi-stdout-filter: drop the Pi `--mode json` stream events Paperclip never
+reads (sf#1602). Paperclip's pi_local adapter keeps a run's whole Pi stdout in
+the run-log file and in heartbeat_runs.result_json; this filter sits between
+pi and the adapter so only events a Paperclip parser reads are kept.
+
+Usage: pi --mode json ... | pi-stdout-filter
+
+Reads stdin line by line and writes to stdout, flushing each line. A line that
+parses as a JSON object is dropped when either:
+
+- its `type` is in DROP_TYPES and it carries no top-level `usage` (the server
+  parser's usage fallback reads `usage` from any type it does not branch on), or
+- its `type` is `message_update` and its `assistantMessageEvent.type` is in
+  DROP_UPDATE_EVENTS.
+
+Every other line (other types, non-JSON, a partial last line, bad UTF-8)
+passes through byte for byte. Never raises on bad input; exit 0 at EOF, 141
+(128 + SIGPIPE) when a write meets a broken pipe: the reader went away, and
+pi-employee reads that as a failed run (sf#2001).
+
+Why each drop is safe, against @paperclipai/adapter-pi-local 2026.916.1:
+- dist/server/parse.js `parsePiJsonl` (summary, errors, usage, cost):
+  turn_start is skipped (:83); message_update only reads `text_delta` (:126-143);
+  message_start and tool_execution_update have no branch and only reach the
+  `usage` fallback (:182).
+- dist/ui/parse-stdout.js `parsePiStdoutLine` (the board transcript, read from
+  the run-log file): turn_start, message_start and tool_execution_update return
+  [] (:103, :156, :227); message_update only reads text_delta, thinking_delta,
+  text_end and thinking_end (:159-192).
+Pinned by tests/fleet/pi-stdout-filter.test.ts against vendored copies of
+both parsers; re-check both when Paperclip is upgraded.
+"""
+import json
+import os
+import sys
+
+DROP_TYPES = frozenset({"turn_start", "message_start", "tool_execution_update"})
+DROP_UPDATE_EVENTS = frozenset({
+    "text_start",
+    "thinking_start",
+    "toolcall_start",
+    "toolcall_delta",
+    "toolcall_end",
+})
+
+
+def drop(line):
+    try:
+        event = json.loads(line)
+    except Exception:
+        return False
+    if not isinstance(event, dict):
+        return False
+    kind = event.get("type")
+    if not isinstance(kind, str):
+        return False
+    if kind in DROP_TYPES:
+        return "usage" not in event
+    if kind == "message_update":
+        inner = event.get("assistantMessageEvent")
+        if not isinstance(inner, dict):
+            return False
+        inner_kind = inner.get("type")
+        return isinstance(inner_kind, str) and inner_kind in DROP_UPDATE_EVENTS
+    return False
+
+
+def main():
+    src = sys.stdin.buffer
+    out = sys.stdout.buffer
+    for line in iter(src.readline, b""):
+        if drop(line):
+            continue
+        try:
+            out.write(line)
+            out.flush()
+        except BrokenPipeError:
+            # Reader went away: no flush error at exit, and a failing code.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), out.fileno())
+            return 141
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

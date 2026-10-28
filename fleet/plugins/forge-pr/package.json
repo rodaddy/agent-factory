@@ -1,0 +1,11 @@
+{
+	"name": "@rodaddy/forge-pr",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Forge pull-request webhook intake for the Software Factory board (sf#1170)",
+	"paperclipPlugin": {
+		"manifest": "./manifest.js",
+		"worker": "./worker.js"
+	}
+}

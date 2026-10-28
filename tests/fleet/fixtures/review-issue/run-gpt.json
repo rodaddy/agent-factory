@@ -1,0 +1,49 @@
+{
+	"version": 1,
+	"id": "6f1c2a9e-4b3d-4c8e-9a71-2d5e8f0b1c34",
+	"lane": "gpt",
+	"unit": "review-job-gpt.service",
+	"requestedModel": "gpt-6.1-sol",
+	"requestedThinking": "low",
+	"packetFileSha256": "954d5e4f00000000000000000000000000000000000000000000000000000000",
+	"bundleSha256": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+	"declared": {
+		"nonce": "10f98c587d3720149301b402f78e76bbb0cbd2faf57f144c7a85793629bfa7ca",
+		"attemptId": "a1",
+		"childRunId": "c1",
+		"packetSha256": "954d5e4f00000000000000000000000000000000000000000000000000000000",
+		"manifestSha256": null
+	},
+	"startedAt": 1791763200,
+	"finishedAt": 1791763500,
+	"cancelled": false,
+	"unitLost": false,
+	"result": "success",
+	"exitCode": "exited",
+	"exitStatus": 0,
+	"execMainStartTimestamp": "x",
+	"execMainExitTimestamp": "y",
+	"timedOut": false,
+	"captures": [
+		{
+			"name": "events.jsonl",
+			"bytes": 88,
+			"sha256": "2a1d66674912de88bfd940683f81e6377f9cffe18a6b1532852a09d339d8cc31",
+			"truncated": false
+		},
+		{
+			"name": "stderr.txt",
+			"bytes": 9,
+			"sha256": "7dd55a75da1a839a4bc7eedbc8ff101f3cd528265b062ab106c31e23ce4a0ca2",
+			"truncated": false
+		}
+	],
+	"collectorComplete": true,
+	"preparationStatus": "ok",
+	"preparerExitStatus": 0,
+	"preparerTimedOut": false,
+	"preparedFiles": 3,
+	"preparedBytes": 120,
+	"preparedManifestSha256": "62c66a7a5dd70c3146618063c344e531e6d4b59e379808443ce962b3abd63c5a",
+	"termination": { "exitCode": 0, "signal": null, "timedOut": false, "truncated": false }
+}

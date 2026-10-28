@@ -1,0 +1,89 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "Pi seat profile v1 (sf#1493 P1.1); fleet/pi/check-profiles enforces it plus family ceilings. No schemaVersion = v0.",
+	"type": "object",
+	"required": [
+		"schemaVersion",
+		"employee",
+		"family",
+		"tools",
+		"extensions",
+		"agentDir",
+		"models",
+		"thinking",
+		"writeRoots",
+		"caps"
+	],
+	"properties": {
+		"schemaVersion": { "const": 1 },
+		"employee": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+		"family": { "enum": ["A", "B", "C", "D", "E", "F", "G"] },
+		"tools": { "$ref": "#/$defs/names", "minItems": 1 },
+		"extensions": {
+			"type": "array",
+			"prefixItems": [{ "const": "pi-extensions/fleet-guard/index.ts" }],
+			"minItems": 1
+		},
+		"agentDir": { "type": "string", "minLength": 1 },
+		"skills": { "$ref": "#/$defs/strings" },
+		"models": {
+			"type": "object",
+			"required": ["families"],
+			"properties": { "families": { "$ref": "#/$defs/strings" } }
+		},
+		"thinking": {
+			"type": "object",
+			"required": ["allowed", "default"],
+			"properties": {
+				"allowed": { "type": "array", "items": { "$ref": "#/$defs/level" } },
+				"default": { "$ref": "#/$defs/level" }
+			}
+		},
+		"writeRoots": { "$ref": "#/$defs/roots" },
+		"readRoots": { "$ref": "#/$defs/roots" },
+		"caps": {
+			"type": "object",
+			"required": ["maxTurns", "maxWallSec", "maxSpendUsd"],
+			"additionalProperties": { "type": "number", "exclusiveMinimum": 0 }
+		},
+		"subagents": { "type": "object" },
+		"envAllow": { "$ref": "#/$defs/strings" },
+		"roleTools": { "$ref": "#/$defs/names" },
+		"skillBins": { "$ref": "#/$defs/strings" },
+		"retention": { "type": "object" },
+		"resultsBlock": { "type": "boolean" },
+		"router": {
+			"type": "object",
+			"required": ["mode", "provider", "default"],
+			"properties": {
+				"mode": { "enum": ["advisory", "live"] },
+				"provider": { "type": "string", "minLength": 1 },
+				"default": { "$ref": "#/$defs/pair" },
+				"tiers": {
+					"type": "object",
+					"propertyNames": { "enum": ["light", "standard", "deep"] },
+					"additionalProperties": { "$ref": "#/$defs/pair" }
+				},
+				"deadlineMs": { "type": "integer", "minimum": 100, "maximum": 30000 }
+			}
+		},
+		"jev": {
+			"type": "object",
+			"properties": { "decideBudget": { "type": "integer", "minimum": 0 } }
+		}
+	},
+	"$defs": {
+		"strings": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+		"names": { "type": "array", "items": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" } },
+		"roots": {
+			"type": "array",
+			"items": { "type": "string", "pattern": "^(~/|/)", "not": { "pattern": "(^|/)\\.\\.(/|$)" } }
+		},
+		"level": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh"] },
+		"pair": {
+			"type": "object",
+			"required": ["model", "thinking"],
+			"properties": { "model": { "type": "string" }, "thinking": { "$ref": "#/$defs/level" } }
+		}
+	}
+}

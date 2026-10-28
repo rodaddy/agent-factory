@@ -1,0 +1,10 @@
+{
+	"version": 1,
+	"status": "ok",
+	"exitStatus": 0,
+	"timedOut": false,
+	"entryCount": 3,
+	"fileCount": 3,
+	"totalBytes": 120,
+	"preparedManifestSha256": "62c66a7a5dd70c3146618063c344e531e6d4b59e379808443ce962b3abd63c5a"
+}

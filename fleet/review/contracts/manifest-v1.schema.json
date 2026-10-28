@@ -1,0 +1,196 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"schemaVersion": {
+			"type": "number",
+			"const": 1
+		},
+		"repo": {
+			"type": "string",
+			"pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+		},
+		"pr": {
+			"type": "integer",
+			"exclusiveMinimum": 0,
+			"maximum": 9007199254740991
+		},
+		"baseSha": {
+			"type": "string",
+			"pattern": "^[a-f0-9]{40}$"
+		},
+		"headSha": {
+			"type": "string",
+			"pattern": "^[a-f0-9]{40}$"
+		},
+		"files": {
+			"maxItems": 19999,
+			"type": "array",
+			"items": {
+				"oneOf": [
+					{
+						"type": "object",
+						"properties": {
+							"path": {
+								"type": "string",
+								"minLength": 1,
+								"maxLength": 512,
+								"pattern": "^(?!\\/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!.*(?:^|\\/)\\.{1,2}(?:\\/|$))(?!.*\\/\\/)(?!.*\\/$).+$"
+							},
+							"bytes": {
+								"type": "integer",
+								"minimum": 0,
+								"maximum": 16777216
+							},
+							"sha256": {
+								"type": "string",
+								"pattern": "^[a-f0-9]{64}$"
+							},
+							"repoPath": {
+								"type": "string",
+								"minLength": 1,
+								"maxLength": 512,
+								"pattern": "^(?!\\/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!.*(?:^|\\/)\\.{1,2}(?:\\/|$))(?!.*\\/\\/)(?!.*\\/$).+$"
+							},
+							"side": {
+								"type": "string",
+								"enum": ["base", "head"]
+							},
+							"objectOid": {
+								"type": "string",
+								"pattern": "^[a-f0-9]{40}$"
+							},
+							"kind": {
+								"type": "string",
+								"const": "regular"
+							},
+							"gitMode": {
+								"type": "string",
+								"enum": ["100644", "100755"]
+							}
+						},
+						"required": [
+							"path",
+							"bytes",
+							"sha256",
+							"repoPath",
+							"side",
+							"objectOid",
+							"kind",
+							"gitMode"
+						],
+						"additionalProperties": false
+					},
+					{
+						"type": "object",
+						"properties": {
+							"path": {
+								"type": "string",
+								"minLength": 1,
+								"maxLength": 512,
+								"pattern": "^(?!\\/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!.*(?:^|\\/)\\.{1,2}(?:\\/|$))(?!.*\\/\\/)(?!.*\\/$).+$"
+							},
+							"bytes": {
+								"type": "integer",
+								"minimum": 0,
+								"maximum": 16777216
+							},
+							"sha256": {
+								"type": "string",
+								"pattern": "^[a-f0-9]{64}$"
+							},
+							"repoPath": {
+								"type": "string",
+								"minLength": 1,
+								"maxLength": 512,
+								"pattern": "^(?!\\/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!.*(?:^|\\/)\\.{1,2}(?:\\/|$))(?!.*\\/\\/)(?!.*\\/$).+$"
+							},
+							"side": {
+								"type": "string",
+								"enum": ["base", "head"]
+							},
+							"objectOid": {
+								"type": "string",
+								"pattern": "^[a-f0-9]{40}$"
+							},
+							"kind": {
+								"type": "string",
+								"const": "symlink"
+							},
+							"gitMode": {
+								"type": "string",
+								"const": "120000"
+							}
+						},
+						"required": [
+							"path",
+							"bytes",
+							"sha256",
+							"repoPath",
+							"side",
+							"objectOid",
+							"kind",
+							"gitMode"
+						],
+						"additionalProperties": false
+					},
+					{
+						"type": "object",
+						"properties": {
+							"path": {
+								"type": "string",
+								"enum": ["context.json", "diff.patch"]
+							},
+							"bytes": {
+								"type": "integer",
+								"minimum": 0,
+								"maximum": 16777216
+							},
+							"sha256": {
+								"type": "string",
+								"pattern": "^[a-f0-9]{64}$"
+							},
+							"kind": {
+								"type": "string",
+								"const": "artifact"
+							}
+						},
+						"required": ["path", "bytes", "sha256", "kind"],
+						"additionalProperties": false
+					}
+				]
+			}
+		},
+		"gitlinks": {
+			"maxItems": 100000,
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"repoPath": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 512,
+						"pattern": "^(?!\\/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!.*(?:^|\\/)\\.{1,2}(?:\\/|$))(?!.*\\/\\/)(?!.*\\/$).+$"
+					},
+					"side": {
+						"type": "string",
+						"enum": ["base", "head"]
+					},
+					"gitMode": {
+						"type": "string",
+						"const": "160000"
+					},
+					"objectOid": {
+						"type": "string",
+						"pattern": "^[a-f0-9]{40}$"
+					}
+				},
+				"required": ["repoPath", "side", "gitMode", "objectOid"],
+				"additionalProperties": false
+			}
+		}
+	},
+	"required": ["schemaVersion", "repo", "pr", "baseSha", "headSha", "files", "gitlinks"],
+	"additionalProperties": false
+}

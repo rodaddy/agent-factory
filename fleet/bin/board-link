@@ -1,0 +1,204 @@
+#!/bin/bash
+# board-link -- put the Forge item a board task is about ON the task, as a
+# clickable work product and as labels (operator ruling 2026-10-01: the board shows
+# the PR or issue each employee is working on, and tasks carry labels).
+#
+# Usage:
+#   board-link <board-issue-id> <forge-url> [label ...]
+#
+# <forge-url> is a pull request or issue on the Forge:
+#   https://forge.example.internal/<owner>/<repo>/pulls/<n>
+#   https://forge.example.internal/<owner>/<repo>/issues/<n>
+#
+# It always adds the labels `repo:<owner>/<repo>` and `kind:pr` or
+# `kind:issue`, then any labels named on the command line. A label that does
+# not exist yet is created. Labels already on the task are kept.
+#
+# Idempotent: a task that already carries the work product is left as it is.
+# Prints one line: work_product=<id> state=created|unchanged labels=<a,b,c>
+#
+# Required environment (missing or empty is exit 3, nothing is sent):
+#   PAPERCLIP_API_URL PAPERCLIP_API_KEY PAPERCLIP_COMPANY_ID
+# Optional: PAPERCLIP_RUN_ID (an employee must send it: the board refuses an
+#   agent's write that names no run), FORGE_WEB_URL (default
+#   https://forge.example.internal).
+#
+# Exit: 0 linked | 1 HTTP failure | 2 bad argument | 3 missing environment.
+set -euo pipefail
+
+usage() {
+	cat >&2 <<'USAGE'
+usage: board-link <board-issue-id> <forge-url> [label ...]
+       <forge-url> is <forge>/<owner>/<repo>/pulls/<n> or .../issues/<n>
+USAGE
+	exit 2
+}
+
+for name in PAPERCLIP_API_URL PAPERCLIP_API_KEY PAPERCLIP_COMPANY_ID; do
+	if [ -z "${!name:-}" ]; then
+		echo "board-link: required environment variable $name is missing or empty" >&2
+		exit 3
+	fi
+done
+
+[ "$#" -ge 2 ] || usage
+issue="$1" url="$2"
+shift 2
+
+ID_RE='^[A-Za-z0-9-]+$'
+LABEL_RE='^[a-z0-9][a-z0-9:._/-]{0,47}$'
+[[ "$issue" =~ $ID_RE ]] || usage
+forge="${FORGE_WEB_URL:-https://forge.example.internal}"
+forge="${forge%/}"
+rest="${url#"$forge"/}"
+[ "$rest" != "$url" ] || usage
+URL_RE='^([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(pulls|issues)/([0-9]+)$'
+[[ "$rest" =~ $URL_RE ]] || usage
+repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+number="${BASH_REMATCH[4]}"
+if [ "${BASH_REMATCH[3]}" = pulls ]; then
+	kind=pr type=pull_request
+else
+	kind=issue type=document
+fi
+external="$repo#$number"
+
+# tr, not ${repo,,}: macOS's /bin/bash is 3.2 and has no case conversion.
+wanted=("repo:$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" "kind:$kind")
+for label in "$@"; do
+	if ! [[ "$label" =~ $LABEL_RE ]]; then
+		echo "board-link: bad label '$label' (lower case, digits, and : . _ / - only, 48 at most)" >&2
+		exit 2
+	fi
+	# A label named twice (or one the script adds by itself) is handled once:
+	# the board list is read once, so a second pass would create it again.
+	case " ${wanted[*]} " in *" $label "*) continue ;; esac
+	wanted+=("$label")
+done
+
+# A curl config value is a quoted string: escape backslash and double quote.
+key="${PAPERCLIP_API_KEY//\\/\\\\}"
+key="${key//\"/\\\"}"
+run="${PAPERCLIP_RUN_ID:-}"
+[[ -z "$run" || "$run" =~ $ID_RE ]] || usage
+api="${PAPERCLIP_API_URL%/}/api"
+
+# One board call. The key goes to curl on a file descriptor, never argv; the
+# JSON body on stdin. Prints the response body; a non-2xx status is exit 1.
+board() { # method path [json]
+	local method="$1" path="$2" body="${3:-}" out code
+	if ! out="$(printf '%s' "$body" | curl -sS -m 30 -X "$method" \
+		--config <(
+			printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "$key"
+			[ -z "$run" ] || printf 'header = "X-Paperclip-Run-Id: %s"\n' "$run"
+		) \
+		${body:+--data-binary @-} -o - -w '\n%{http_code}' "$api$path")"; then
+		echo "board-link: $method $path: request failed" >&2
+		return 1
+	fi
+	code="${out##*$'\n'}"
+	out="${out%$'\n'*}"
+	case "$code" in
+	2??) printf '%s' "$out" ;;
+	*)
+		echo "board-link: $method $path: HTTP $code" >&2
+		printf '%s' "$out" | head -c 300 >&2
+		echo >&2
+		return 1
+		;;
+	esac
+}
+
+# The work product.
+products="$(board GET "/issues/$issue/work-products")"
+product="$(printf '%s' "$products" | jq -r --arg e "$external" \
+	'[.[] | select(.provider == "forgejo" and .externalId == $e) | .id][0] // empty')"
+state=unchanged
+if [ -z "$product" ]; then
+	primary="$(printf '%s' "$products" | jq '[.[] | select(.isPrimary)] | length == 0')"
+	made="$(board POST "/issues/$issue/work-products" "$(jq -n --arg type "$type" \
+		--arg title "$external" --arg url "$url" --argjson primary "$primary" \
+		'{type: $type, provider: "forgejo", title: $title, url: $url, externalId: $title,
+		  status: "active", isPrimary: $primary}')")"
+	product="$(printf '%s' "$made" | jq -er '.id | strings')" || {
+		echo "board-link: the board created a work product with no id" >&2
+		exit 1
+	}
+	state=created
+fi
+
+# The labels: create what is missing, then set the union on the task.
+color_of() {
+	case "$1" in
+	repo:*) echo "#0ea5e9" ;;
+	kind:*) echo "#4f46e5" ;;
+	sev:* | severity:*) echo "#dc2626" ;;
+	*) echo "#64748b" ;;
+	esac
+}
+known="$(board GET "/companies/$PAPERCLIP_COMPANY_ID/labels")"
+ids=()
+for label in "${wanted[@]}"; do
+	id="$(printf '%s' "$known" | jq -r --arg n "$label" '[.[] | select(.name == $n) | .id][0] // empty')"
+	if [ -z "$id" ]; then
+		if made="$(board POST "/companies/$PAPERCLIP_COMPANY_ID/labels" \
+			"$(jq -n --arg n "$label" --arg c "$(color_of "$label")" '{name: $n, color: $c}')")"; then
+			id="$(printf '%s' "$made" | jq -er '.id | strings')" || {
+				echo "board-link: the board created label $label with no id" >&2
+				exit 1
+			}
+		else
+			# Another employee may have created it between our read and our
+			# write: the board refuses a duplicate name (HTTP 500, probed
+			# 2026-10-01). Read again and use it if it is there now.
+			known="$(board GET "/companies/$PAPERCLIP_COMPANY_ID/labels")"
+			id="$(printf '%s' "$known" | jq -r --arg n "$label" '[.[] | select(.name == $n) | .id][0] // empty')"
+			if [ -z "$id" ]; then
+				echo "board-link: label $label could not be created" >&2
+				exit 1
+			fi
+			echo "board-link: label $label was created by someone else meanwhile; using it" >&2
+		fi
+	fi
+	ids+=("$id")
+done
+# The board sets an issue's labels as a whole (no add-one call), so two
+# employees writing at once can each drop the other's label. Writers on this
+# machine take a per-issue lock around read-and-write, which serializes them
+# (every employee runs on the fleet box). A writer elsewhere is caught by the
+# re-read after a short settle: whoever lost re-adds, keeping what the other
+# added (PR 1158 review, two rounds).
+lock_root="${BOARD_LINK_LOCK_DIR:-$HOME/.cache/fleet/locks}"
+mkdir -p "$lock_root"
+lock="$lock_root/board-link-$issue"
+waited=0
+until mkdir "$lock" 2>/dev/null; do
+	if [ "$waited" -ge 120 ]; then
+		echo "board-link: $lock held for 60 s; remove it if no board-link is running" >&2
+		exit 1
+	fi
+	sleep 0.5
+	waited=$((waited + 1))
+done
+trap 'rmdir "$lock" 2>/dev/null' EXIT
+settle="${BOARD_LINK_SETTLE:-1}"
+mine="$(printf '%s\n' "${ids[@]}" | jq -R . | jq -sc 'unique')"
+attempt=0
+while :; do
+	current="$(board GET "/issues/$issue")"
+	have="$(printf '%s' "$current" | jq -c '(.labelIds // []) | unique')"
+	if [ "$attempt" -gt 0 ] && [ "$(jq -n --argjson h "$have" --argjson m "$mine" '$m - $h | length')" = 0 ]; then
+		break
+	fi
+	if [ "$attempt" -ge 5 ]; then
+		echo "board-link: the task's labels kept being replaced; gave up after 5 tries" >&2
+		exit 1
+	fi
+	union="$(jq -cn --argjson h "$have" --argjson m "$mine" '$h + $m | unique')"
+	[ "$union" = "$have" ] || board PATCH "/issues/$issue" "$(jq -n --argjson l "$union" '{labelIds: $l}')" >/dev/null
+	attempt=$((attempt + 1))
+	sleep "$settle"
+done
+
+joined="$(IFS=,; printf '%s' "${wanted[*]}")"
+echo "work_product=$product state=$state labels=$joined"

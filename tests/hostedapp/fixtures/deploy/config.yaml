@@ -1,0 +1,4 @@
+# Fixture application config, mounted at /etc/app/config.yaml as the
+# `app-config` ConfigMap. Its content is copied verbatim into the render.
+mode: uat
+retries: 3

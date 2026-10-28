@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.rico.factory-notify</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/opt/node@24/bin/node</string>
+		<string>/opt/factory-notify/rico-notify.ts</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>RICO_NOTIFY_ENV_FILE</key>
+		<string>/opt/factory-notify/env</string>
+		<key>RICO_NOTIFY_STATE</key>
+		<string>/opt/factory-notify/state.json</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>/opt/factory-notify/notify.log</string>
+	<key>StandardErrorPath</key>
+	<string>/opt/factory-notify/notify.log</string>
+</dict>
+</plist>

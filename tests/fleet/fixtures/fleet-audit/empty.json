@@ -1,0 +1,10 @@
+{
+	"schema": "fleet-audit-snapshot/1",
+	"window": { "label": "4h", "from": "2026-10-07T00:00:00Z", "to": "2026-10-07T04:00:00Z" },
+	"collectedAt": "2026-10-07T04:00:05Z",
+	"agents": [],
+	"runs": [],
+	"issues": [],
+	"recovery": { "activeByCause": {} },
+	"errors": []
+}

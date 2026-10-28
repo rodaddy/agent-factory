@@ -1,0 +1,11 @@
+{
+	"name": "@rodaddy/paperclip-run-trace",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Agent run traces to Langfuse for the Software Factory board (sf#1166)",
+	"paperclipPlugin": {
+		"manifest": "./manifest.js",
+		"worker": "./worker.js"
+	}
+}

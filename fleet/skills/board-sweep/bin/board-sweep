@@ -1,0 +1,848 @@
+#!/usr/bin/env python3
+"""board-sweep (sf#1338): clear the board's blocked inbox by fixed rules.
+
+Usage: board-sweep [--apply] [--base-url URL] [--forge-url URL]
+
+Env: PAPERCLIP_API_URL (or --base-url), PAPERCLIP_API_KEY (header only),
+  PAPERCLIP_COMPANY_ID, FORGEJO_TOKEN (header only), FORGEJO_API_URL (or
+  --forge-url); optional PAPERCLIP_RUN_ID, sent on every write as
+  X-Paperclip-Run-Id the way fleet/bin/board-link sends it.
+
+Default is a DRY RUN: every action is computed and printed, nothing is written.
+--apply performs the writes. A write is a comment
+`board-sweep: <action> -- <reason>` on the issue, then the status PATCH; a
+status never changes without its comment first.
+
+Rules, first match wins, for every blocked issue:
+  1. nagatha       assigned to Nagatha: never touched.
+  2. review        `Review <owner/repo>#<n> @ <sha>` (and the reviewer sub-task
+                   shapes): cancelled when the PR is closed, merged, or its
+                   head moved; kickback when a required check failed or the
+                   lead's verdict is fix-first (below);
+                   otherwise, per exact title, the newest is a todo candidate
+                   for the priority queue and older ones are cancelled.
+  3. merge-check   `Checks not green ...` / `Resolve merge-check read failure
+                   ...`: cancelled when the PR is not open, else listed.
+  4. routine       routine_execution: one open instance per routine survives,
+                   the newest; other blocked instances are cancelled. A newest
+                   instance that is blocked is listed as routine-kept.
+  5. parent        every child terminal and every first-class blockedBy
+                   dependency done (SOF-10842): back to todo. List rows omit
+                   blockedBy, so the candidate's issue detail is read; a
+                   failed read or a detail without a blockedBy list is an
+                   error and the task stays as it is (fail closed). A
+                   blocker in any status but done (cancelled included)
+                   keeps it blocked, listed as other.
+  6. waiting-author `Triage <owner/repo>#<n>` (sf#1366): cancelled when the
+                   Forge issue is closed; back to todo when the issue's author
+                   commented after the board issue's updatedAt; otherwise
+                   listed as waiting-author, unchanged.
+  7. other         listed, unchanged.
+
+Review tasks in todo or in_progress (Rico, 2026-10-04: stalled reviews get
+kickstarted unless invalid, then kicked back; the most important first):
+  - invalid        PR closed/merged or head moved: cancel. A required check
+                   (factory/smoke, factory/prepush) failure|error at the
+                   reviewed sha: kickback = one `REVIEW KICKBACK:` comment on
+                   the Forge PR per sha, then the task cancelled unless it
+                   carries counted fix-first evidence (its status is kept). Blocked
+                   reviews get the same kickback. So does a lead verdict of
+                   fix-first at the reviewed sha (sf#1813): the newest board
+                   comment by a lead (Adams, Czajka, Smythe) carrying
+                   `## Review of <repo>#<n> at <sha7>` and a `verdict:` line,
+                   read from every task of that PR and sha7, any status.
+  - kickstart      updatedAt older than BOARD_SWEEP_STALL_MIN minutes (default
+                   30, against BOARD_SWEEP_NOW or the clock) and no queued or
+                   running run in the task's own runs list: comment, then
+                   todo, which wakes the assignee. A todo the board refuses
+                   adds a `board-sweep: kickstart-refused` comment.
+  - escalate       stalled again after two earlier kickstarts the board
+                   accepted (refused ones do not count): one comment and
+                   one high-priority `Stalled review: <title>` issue for
+                   Bishop, unless one is already open. Never Rico.
+Queue: every todo candidate (kickstarts and blocked-review releases) is
+ordered by priority (critical, high, medium, low), then the lowest `pri:N`
+label (unlabelled last), then oldest createdAt. Each assignee takes at most
+its free slots (maxConcurrentRuns minus its queued+running runs from
+live-runs; 1 when the agent states none; a full 50-row live-runs page counts
+as 50 for every assignee); an assignee with no free slot still takes its first
+kickstart. Admitted writes go out in queue order. The rest stay as they are,
+listed as review-next-pass `queued: priority <p>, position <k>`. A failed
+live-runs or task-runs read holds every kickstart and release this sweep.
+
+The per-run cross-issue write cap (SOF-10747): the board allows one heartbeat
+run 20 cross-issue comments plus status updates, then answers 429 with
+details.code `cross_issue_influence_cap_exceeded`. Every item that writes is
+handled in priority order (critical, high, medium, low, then the lowest
+`pri:N`, then within one priority cleanups before releases, then oldest)
+within a budget of BOARD_SWEEP_MAX_WRITES board issue writes (default 18;
+every request to /api/issues/... counts, retries included). An item starts
+only when its writes fit (2; a kickstart 3, room for its refusal note; an
+escalation 1). The first item that does not fit, or the first cap 429, stops
+all writes at once: that write is not retried, and it and every later item
+that writes is listed as `next-pass` with `planned: <action>` (and `partial`
+when some of its writes went out, naming `the cap` or `the write budget ran
+out`). A retry also keeps room for the rest of its item (SOF-10912): a
+comment is retried only while the budget still holds its status PATCH, so
+no comment is accepted without room for its status write; a kickstart PATCH
+the budget stops still posts its refusal note, from its reserved write.
+That is not an error: the JSON still
+prints, `stopped` names the reason, and the next hourly pass takes the rest.
+A dry run previews the same budget.
+
+Writes are paced, at most one per BOARD_SWEEP_WRITE_GAP_MS (default 200). A
+write answered 503, or 429 without the cap code, is retried, up to 5
+attempts, waiting Retry-After (capped at 30 s) or 1, 2, 4, 8 s. A failed
+write records its HTTP status and reason. A 422 on the todo PATCH (the board refuses todo, e.g. open blockedBy
+issues) is a skip, not an error. BOARD_SWEEP_NO_WAIT=1 makes every wait
+zero-length (tests).
+
+Output: one JSON object (mode, blocked_before, actions, errors, error_codes,
+skipped, write_budget, writes (board issue writes sent), stopped (null or why
+writes stopped), items, queue (first 20 waiting), and blocked_after in apply
+mode). Exit: 0 clean | 1 errors > 0
+or a board read failed | 2 bad argument | 3 missing environment (nothing sent).
+"""
+import datetime
+import json
+import os
+import re
+import runpy
+from pathlib import Path
+import sys
+import subprocess
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+TERMINAL = {"done", "cancelled"}
+NAGATHA = "Nagatha"
+PAGE = 500
+MAX_PAGES = 100
+# The lead's review and every reviewer sub-task: "Review", "Adams: blind
+# review", "Chang: blind senior shadow review", "Chang review", "Blind review".
+REVIEW = re.compile(
+    r"^(?:[A-Za-z]+:? )?(?:[Bb]lind )?(?:(?:senior|junior) )?(?:shadow )?[Rr]eview "
+    r"(\S+/\S+)#(\d+) @ ([0-9a-f]{7,40})"
+)
+FOLLOW_UP = re.compile(r"^(?:Checks not green|Resolve merge-check read failure)\b.*?(\S+/\S+)#(\d+)")
+EXEMPT = re.compile(r"^\s*(?:triage|review|merge|write spec|spec-writing|diagnose|research|audit|run-audit|fleet audit|infra:|ask:|backlog:|config:)(?:\b|\s)", re.I)
+TRIAGE = re.compile(r"^Triage (\S+/\S+)#(\d+)$")
+ACTIONS = ["cancel", "todo", "kickback", "kickstart", "escalate", "nagatha", "merge-check",
+           "routine-kept", "queue", "review-next-pass", "waiting-author", "other", "next-pass"]
+REQUIRED_CHECKS = ("factory/smoke", "factory/prepush")
+PRIORITY = ["critical", "high", "medium", "low"]
+PRI_LABEL = re.compile(r"^pri:(\d+)$")
+ACTIVE_RUN = {"queued", "running"}
+ESCALATE_TO = "Bishop"
+KICKSTART = "board-sweep: kickstart"
+KICKSTART_REFUSED = "board-sweep: kickstart-refused"
+KICKSTARTS_BEFORE_ESCALATE = 2
+LIVE_RUNS_CAP = 50
+QUEUE_SHOWN = 20
+RETRY_STATUS = {429, 503}
+ATTEMPTS = 5
+RETRY_AFTER_CAP = 30
+CAP_CODE = "cross_issue_influence_cap_exceeded"
+MAX_WRITES = 18  # the board's per-run cap is 20 (paperclipai 2026.916.1)
+ISSUE_WRITE = "/api/issues/"  # the writes the cap counts: comments and updates
+# Board issue writes each action needs; a kickstart keeps room for its refusal note.
+COST = {"cancel": 2, "todo": 2, "kickback": 2, "queue": 2, "kickstart": 3, "escalate": 1}
+
+
+def die(msg, code=1):
+    sys.stderr.write(f"board-sweep: {msg}\n")
+    sys.exit(code)
+
+
+class Http:
+    def __init__(self, base, auth, run_id=""):
+        self.base, self.auth, self.run_id = base, auth, run_id
+
+    def call(self, method, path, body=None):
+        headers = {"Authorization": self.auth, "Accept": "application/json"}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+            if self.run_id:
+                headers["X-Paperclip-Run-Id"] = self.run_id
+        req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read().decode()
+            return json.loads(raw) if raw.strip() else None
+
+
+class Stop(BaseException):
+    """Stop every write this pass: the budget is spent or the board's cap was hit.
+    A BaseException, so the per-write `except Exception` handlers never swallow it.
+    `kind` is "budget" or "cap", so a partial item says which one stopped it."""
+
+    def __init__(self, msg, kind):
+        super().__init__(msg)
+        self.kind = kind
+
+
+def http_body(e):
+    """An HTTPError's response body, read once and kept, so two readers agree."""
+    if not hasattr(e, "sweep_body"):
+        try:
+            e.sweep_body = e.read().decode(errors="replace")
+        except Exception:
+            e.sweep_body = ""
+    return e.sweep_body
+
+
+def is_cap(e):
+    """True for the board's per-run cross-issue write cap refusal."""
+    if not (isinstance(e, urllib.error.HTTPError) and e.code == 429):
+        return False
+    try:
+        doc = json.loads(http_body(e))
+    except ValueError:
+        return False
+    if not isinstance(doc, dict):
+        return False
+    details = doc.get("details") if isinstance(doc.get("details"), dict) else {}
+    return CAP_CODE in (details.get("code"), doc.get("code"))
+
+
+def http_reason(e):
+    """`HTTP <code> <reason>` for an HTTPError: the body's error field, else the
+    body, first 120 chars. Only the response is read, never the request headers."""
+    raw = http_body(e)
+    try:
+        doc = json.loads(raw)
+        text = doc["error"] if isinstance(doc, dict) and doc.get("error") else raw
+    except ValueError:
+        text = raw
+    text = " ".join(str(text).split())[:120]
+    return f"HTTP {e.code} {text}".rstrip()
+
+
+def failure(e):
+    """(text, HTTP status or None) for a failed write; never the key."""
+    if isinstance(e, urllib.error.HTTPError):
+        return http_reason(e), e.code
+    return type(e).__name__, None
+
+
+class Writer:
+    """Every board write: paced by `gap` seconds, 429/503 retried with backoff.
+    All waiting goes through `wait`, so a test can make it zero-length.
+    Board issue writes are counted in `sent` (every attempt) and `ok` (accepted);
+    one past `budget`, or the board's cap 429, raises Stop and is never retried.
+    `reserve` is how many board issue writes the item still needs after this one
+    (SOF-10912): an attempt, a retry included, is sent only when it and the
+    reserve both fit, so a retry never spends the room its status write needs."""
+
+    def __init__(self, board, wait, gap, budget=MAX_WRITES):
+        self.board, self.wait, self.gap, self.last = board, wait, gap, None
+        self.budget, self.sent, self.ok = budget, 0, 0
+
+    def call(self, method, path, body, reserve=0):
+        counted = path.startswith(ISSUE_WRITE)
+        for attempt in range(ATTEMPTS):
+            if counted and self.sent + 1 + reserve > self.budget:
+                why = "" if not attempt else ": no room to retry a write and finish its item"
+                raise Stop(f"write budget of {self.budget} spent{why}", "budget")
+            if self.last is not None:
+                self.wait(max(0.0, self.gap - (time.monotonic() - self.last)))
+            self.last = time.monotonic()
+            if counted:
+                self.sent += 1
+            try:
+                out = self.board.call(method, path, body)
+                if counted:
+                    self.ok += 1
+                return out
+            except urllib.error.HTTPError as e:
+                if is_cap(e):
+                    raise Stop(f"cross-issue write cap reached: {http_reason(e)}", "cap")
+                if e.code not in RETRY_STATUS or attempt == ATTEMPTS - 1:
+                    raise
+                try:
+                    delay = min(float(e.headers.get("Retry-After")), RETRY_AFTER_CAP)
+                except (TypeError, ValueError):
+                    delay = float(2 ** attempt)
+                self.wait(max(0.0, delay))
+
+
+def bget(board, path):
+    try:
+        return board.call("GET", path)
+    except Exception as e:  # never echo the key or the body
+        die(f"board GET {path.split('?')[0]} failed: {type(e).__name__}")
+
+
+def paged(board, path):
+    """Every issue a list path returns, deduplicated by id across pages."""
+    seen, out = set(), []
+    sep = "&" if "?" in path else "?"
+    for page in range(MAX_PAGES):
+        items = bget(board, f"{path}{sep}limit={PAGE}&offset={page * PAGE}")
+        if not isinstance(items, list):
+            die(f"board {path.split('?')[0]} did not return a list")
+        for it in items:
+            if it.get("id") not in seen:
+                seen.add(it.get("id"))
+                out.append(it)
+        if len(items) < PAGE:
+            return out
+    die(f"board {path.split('?')[0]} has more than {MAX_PAGES} pages")
+
+
+def when(stamp):
+    """An ISO-8601 stamp as an aware datetime; Forge and the board use different offsets."""
+    return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def newest(issues):
+    return max(issues, key=lambda i: (i.get("createdAt") or "", i.get("identifier") or ""))
+
+
+def main(argv):
+    apply, base, forge_url, i = False, None, None, 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--apply":
+            apply, i = True, i + 1
+        elif a in ("--base-url", "--forge-url"):
+            if i + 1 >= len(argv):
+                die(f"{a} needs a value", 2)
+            if a == "--base-url":
+                base = argv[i + 1]
+            else:
+                forge_url = argv[i + 1]
+            i += 2
+        else:
+            die("usage: board-sweep [--apply] [--base-url URL] [--forge-url URL]", 2)
+    board_url = (base or os.environ.get("PAPERCLIP_API_URL", "")).rstrip("/")
+    forge_api = (forge_url or os.environ.get("FORGEJO_API_URL", "")).rstrip("/")
+    key = os.environ.get("PAPERCLIP_API_KEY", "")
+    company = os.environ.get("PAPERCLIP_COMPANY_ID", "")
+    token = os.environ.get("FORGEJO_TOKEN", "")
+    run_id = os.environ.get("PAPERCLIP_RUN_ID", "")
+    if not (board_url and forge_api and key and company and token):
+        die("PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID, FORGEJO_TOKEN and "
+            "FORGEJO_API_URL are required (or --base-url / --forge-url)", 3)
+    if not re.fullmatch(r"[\w-]+", company) or (run_id and not re.fullmatch(r"[\w-]+", run_id)):
+        die("PAPERCLIP_COMPANY_ID and PAPERCLIP_RUN_ID must be ids", 2)
+    board = Http(board_url, f"Bearer {key}", run_id)
+    wait = (lambda s: None) if os.environ.get("BOARD_SWEEP_NO_WAIT") == "1" else time.sleep
+    try:
+        gap = int(os.environ.get("BOARD_SWEEP_WRITE_GAP_MS", "200")) / 1000
+    except ValueError:
+        die("BOARD_SWEEP_WRITE_GAP_MS must be an integer", 2)
+    try:
+        stall_min = int(os.environ.get("BOARD_SWEEP_STALL_MIN", "30"))
+    except ValueError:
+        die("BOARD_SWEEP_STALL_MIN must be an integer", 2)
+    try:
+        budget = int(os.environ.get("BOARD_SWEEP_MAX_WRITES", str(MAX_WRITES)))
+        if budget < 0:
+            raise ValueError
+    except ValueError:
+        die("BOARD_SWEEP_MAX_WRITES must be a whole number", 2)
+    try:
+        now = when(os.environ["BOARD_SWEEP_NOW"]) if os.environ.get("BOARD_SWEEP_NOW") else \
+            datetime.datetime.now(datetime.timezone.utc)
+    except ValueError:
+        die("BOARD_SWEEP_NOW must be an ISO-8601 time", 2)
+    writer = Writer(board, wait, gap, budget)
+    forge = Http(forge_api, f"token {token}")
+    cpath = f"/api/companies/{company}"
+
+    agents = bget(board, f"{cpath}/agents")
+    agents = agents if isinstance(agents, list) else []
+    names = {a.get("id"): a.get("name") for a in agents}
+    nag = [a.get("id") for a in agents if a.get("name") == NAGATHA and a.get("id")]
+    if len(nag) != 1:
+        die(f"board has {len(nag)} agents named {NAGATHA}, need exactly 1")
+    bishop = [a.get("id") for a in agents if a.get("name") == ESCALATE_TO and a.get("id")]
+    slots = {}
+    for a in agents:
+        n = ((a.get("runtimeConfig") or {}).get("heartbeat") or {}).get("maxConcurrentRuns")
+        slots[a.get("id")] = n if isinstance(n, int) and n > 0 else 1
+    blocked = paged(board, f"{cpath}/issues?status=blocked")
+    everything = paged(board, f"{cpath}/issues")
+    by_id = {it.get("id"): it for it in everything}
+    for it in blocked:
+        by_id.setdefault(it.get("id"), it)
+    open_issues = [it for it in by_id.values() if it.get("status") not in TERMINAL]
+    children = {}
+    for it in by_id.values():
+        if it.get("parentId"):
+            children.setdefault(it["parentId"], []).append(it)
+
+    prs, authors, errors = {}, {}, 0
+    merge_rules = runpy.run_path(str(Path(__file__).resolve().parents[2] / "merge-pr/bin/merge-check"))
+    # Capacity reads live-runs (queued and running only, at most LIVE_RUNS_CAP
+    # rows): exact below the cap, at least the cap when it is full, so free
+    # slots fail closed. heartbeat-runs is a window that mixes finished runs and
+    # misses active ones; it is not read. A failed read holds every kickstart
+    # and release this sweep.
+    hold, busy, busy_floor = "", {}, 0
+    try:
+        live = board.call("GET", f"{cpath}/live-runs")
+        if not isinstance(live, list):
+            raise ValueError("live-runs not a list")
+        for r in live:
+            busy[(r or {}).get("agentId")] = busy.get((r or {}).get("agentId"), 0) + 1
+        busy_floor = LIVE_RUNS_CAP if len(live) >= LIVE_RUNS_CAP else 0
+    except Exception as e:
+        errors += 1
+        hold = f"board GET live-runs failed: {failure(e)[0]}"
+        sys.stderr.write(f"board-sweep: {hold}\n")
+
+    def pr_state(repo, num):
+        """'open:<sha>', 'merged', 'closed', or None when the read failed."""
+        k = f"{repo}#{num}"
+        if k not in prs:
+            try:
+                pr = forge.call("GET", f"/repos/{urllib.parse.quote(repo, safe='/')}/pulls/{num}")
+                authors[k] = (pr.get("user") or {}).get("login") or ""
+                if pr.get("merged"):
+                    prs[k] = "merged"
+                elif pr.get("state") != "open":
+                    prs[k] = "closed"
+                else:
+                    prs[k] = "open:" + ((pr.get("head") or {}).get("sha") or "")
+            except Exception as e:
+                prs[k] = None
+                sys.stderr.write(f"board-sweep: forge GET {k} failed: {type(e).__name__}\n")
+        return prs[k]
+
+    checks = {}
+
+    def failed_check(repo, sha):
+        """The first required check at failure|error on sha, '' when none, None when the read failed."""
+        k = f"{repo}@{sha}"
+        if k not in checks:
+            try:
+                doc = forge.call("GET", f"/repos/{urllib.parse.quote(repo, safe='/')}/commits/{sha}/status")
+                states = {s.get("context"): s.get("status") or s.get("state")
+                          for s in ((doc or {}).get("statuses") or [])}
+                checks[k] = next((c for c in REQUIRED_CHECKS if states.get(c) in ("failure", "error")), "")
+            except Exception as e:
+                checks[k] = None
+                sys.stderr.write(f"board-sweep: forge GET {repo}@{sha[:7]} status failed: {type(e).__name__}\n")
+        return checks[k]
+
+    verdicts = {}
+
+    def lead_verdict(group):
+        """Use the merge gate's exact-head authority and precedence rules."""
+        if group not in verdicts:
+            repo, num, sha7 = group
+            try:
+                verdict, ev, _ = merge_rules["review_verdict"](
+                    board_url, key, company, repo, num, prs[f"{repo}#{num}"][5:],
+                    authors[f"{repo}#{num}"])
+                verdicts[group] = (verdict or "") if not ev["held"] else ""
+            except (Exception, SystemExit) as e:
+                verdicts[group] = None
+                sys.stderr.write(f"board-sweep: authoritative review for {repo}#{num} @ {sha7} failed: "
+                                 f"{type(e).__name__}\n")
+        return verdicts[group]
+
+    kickbacks = {}  # issue id -> (repo, num, sha7) for the Forge comment
+
+    def invalid(it, m):
+        """(action, reason) when the review is not worth running, None when it is valid."""
+        nonlocal errors
+        st = pr_state(m.group(1), m.group(2))
+        if st is None:
+            errors += 1
+            return ("other", "PR read failed")
+        if st in ("merged", "closed"):
+            return ("cancel", f"PR {st}")
+        if not st[5:].startswith(m.group(3)):
+            return ("cancel", f"head moved to {st[5:12]}")
+        key = (m.group(1), m.group(2), m.group(3)[:7])
+        said = lead_verdict(key)
+        if said is None:
+            errors += 1
+            return ("other", "comment read failed")
+        bad = failed_check(m.group(1), st[5:])
+        if bad is None:
+            errors += 1
+            return ("other", "check read failed")
+        if bad:
+            sha7 = m.group(3)[:7]
+            kickbacks[it.get("id")] = (m.group(1), m.group(2), sha7)
+            return ("kickback", f"{bad} failed at {sha7}: the author fixes it and pushes; "
+                                "a new head gets a new review")
+        if said == "fix-first":
+            kickbacks[it.get("id")] = key
+            return ("kickback", f"verdict fix-first at {key[2]}: the author fixes the findings and "
+                                "pushes; a new head gets a new review")
+        return None
+
+    plan = {}  # issue id -> (action, reason)
+    reviews = {}  # exact title -> [issues still in play]
+    for it in blocked:
+        iid, title = it.get("id"), it.get("title") or ""
+        if it.get("assigneeAgentId") == nag[0]:
+            plan[iid] = ("nagatha", "Nagatha's task")
+            continue
+        m = REVIEW.match(title)
+        if m:
+            verdict = invalid(it, m)
+            if verdict:
+                plan[iid] = verdict
+            else:
+                reviews.setdefault(title, []).append(it)
+            continue
+        m = FOLLOW_UP.match(title)
+        if m:
+            st = pr_state(m.group(1), m.group(2))
+            if st is None:
+                errors += 1
+                plan[iid] = ("other", "PR read failed")
+            elif st in ("merged", "closed"):
+                plan[iid] = ("cancel", f"PR {st}")
+            else:
+                plan[iid] = ("merge-check", "PR open; merge-check owns it")
+            continue
+        if it.get("originKind") == "routine_execution" and it.get("originId"):
+            peers = [o for o in open_issues
+                     if o.get("originKind") == "routine_execution" and o.get("originId") == it["originId"]]
+            top = newest(peers + [it])
+            if top.get("id") == iid:
+                plan[iid] = ("routine-kept", "newest open instance of its routine")
+            else:
+                plan[iid] = ("cancel", f"one open instance per routine; newest is {top.get('identifier')}")
+            continue
+        kids = children.get(iid, [])
+        if kids and all(k.get("status") in TERMINAL for k in kids):
+            # Finished children are not enough (SOF-10842): a live first-class
+            # blocker keeps the parent blocked. Only the detail read carries
+            # blockedBy, and only a done blocker is resolved.
+            try:
+                detail = board.call("GET", f"/api/issues/{urllib.parse.quote(str(iid), safe='')}")
+                deps = (detail or {}).get("blockedBy") if isinstance(detail, dict) else None
+                if not isinstance(deps, list):
+                    raise ValueError("issue detail has no blockedBy list")
+            except Exception as e:
+                errors += 1
+                plan[iid] = ("other", "children finished; blocker read failed")
+                sys.stderr.write(f"board-sweep: board GET detail for {it.get('identifier')} failed: "
+                                 f"{e if isinstance(e, ValueError) else failure(e)[0]}\n")
+                continue
+            live = [d if isinstance(d, dict) else {} for d in deps]
+            live = [d for d in live if d.get("status") != "done"]
+            if live:
+                named = ", ".join(f"{d.get('identifier') or d.get('id') or '?'} ({d.get('status') or 'unknown'})"
+                                  for d in live)
+                plan[iid] = ("other", f"children finished; blocked by {named}")
+                continue
+            plan[iid] = ("todo", "all children finished")
+            continue
+        m = TRIAGE.match(title)
+        if m:
+            ipath = f"/repos/{urllib.parse.quote(m.group(1), safe='/')}/issues/{m.group(2)}"
+            try:
+                fi = forge.call("GET", ipath)
+                comments = forge.call("GET", f"{ipath}/comments") or []
+            except Exception as e:
+                errors += 1
+                plan[iid] = ("other", "issue read failed")
+                sys.stderr.write(f"board-sweep: forge GET {m.group(1)}#{m.group(2)} failed: "
+                                 f"{type(e).__name__}\n")
+                continue
+            if fi.get("state") != "open":
+                plan[iid] = ("cancel", "issue closed")
+                continue
+            author = (fi.get("user") or {}).get("login")
+            since = it.get("updatedAt") or ""
+            replies = [c.get("created_at") for c in comments
+                       if author and (c.get("user") or {}).get("login") == author and c.get("created_at")]
+            last = max(replies, key=when, default=None)
+            if last and since and when(last) > when(since):
+                plan[iid] = ("todo", f"author replied {last}")
+            else:
+                plan[iid] = ("waiting-author", f"no author reply since {since}")
+            continue
+        plan[iid] = ("other", "no rule matched")
+    candidates = []  # (issue, action, reason): each one would set the task todo
+    for group in reviews.values():
+        top = newest(group)
+        candidates.append((top, "todo", "newest review for the live head"))
+        for it in group:
+            if it is not top:
+                plan[it["id"]] = ("cancel", f"superseded by {top.get('identifier')}")
+
+    # Reviews already in todo or in_progress: kick back the invalid, kickstart
+    # the stalled. A blocked review waits on its children; those are checked.
+    escalations = {}  # issue id -> title of the Bishop issue to open
+    open_titles = {o.get("title"): o.get("identifier") for o in open_issues}
+    active = [it for it in by_id.values()
+              if it.get("status") in ("todo", "in_progress", "backlog") and REVIEW.match(it.get("title") or "")
+              and it.get("assigneeAgentId") != nag[0]]
+    for it in active:
+        iid, title = it.get("id"), it.get("title") or ""
+        verdict = invalid(it, REVIEW.match(title))
+        if verdict:
+            plan[iid] = verdict
+            continue
+        if it.get("status") == "backlog":
+            # The queue: a review waiting its turn is backlog, never blocked.
+            candidates.append((it, "todo", "released from the queue"))
+            continue
+        since = it.get("updatedAt")
+        if not since:
+            continue
+        idle = (now - when(since)).total_seconds() / 60
+        if idle <= stall_min:
+            continue
+        q = urllib.parse.quote(str(iid), safe="")
+        try:
+            own = board.call("GET", f"/api/issues/{q}/runs")
+            if not isinstance(own, list):
+                raise ValueError("runs not a list")
+        except Exception as e:
+            errors += 1
+            plan[iid] = ("other", "run read failed")
+            why = f"board GET runs for {it.get('identifier')} failed: {failure(e)[0]}"
+            hold = hold or why
+            sys.stderr.write(f"board-sweep: {why}\n")
+            continue
+        if any((r or {}).get("status") in ACTIVE_RUN for r in own):
+            continue
+        try:
+            notes = board.call("GET", f"/api/issues/{urllib.parse.quote(str(iid), safe='')}/comments")
+            if not isinstance(notes, list):
+                raise ValueError("comments not a list")
+        except Exception as e:
+            errors += 1
+            plan[iid] = ("other", "comment read failed")
+            sys.stderr.write(f"board-sweep: board GET comments for {it.get('identifier')} failed: "
+                             f"{type(e).__name__}\n")
+            continue
+        # Only restarts the board accepted count: a refused PATCH leaves a
+        # KICKSTART_REFUSED note that cancels its kickstart comment.
+        bodies = [str((c or {}).get("body") or "") for c in notes]
+        kicks = sum(1 for b in bodies if b.startswith(f"{KICKSTART} -- ")) - \
+            sum(1 for b in bodies if b.startswith(KICKSTART_REFUSED))
+        if kicks >= KICKSTARTS_BEFORE_ESCALATE:
+            etitle = f"Stalled review: {title}"
+            if etitle in open_titles:
+                plan[iid] = ("escalate", f"already escalated: {open_titles[etitle]}")
+            else:
+                plan[iid] = ("escalate", "stalled after two kickstarts")
+                escalations[iid] = etitle
+            continue
+        candidates.append((it, "kickstart",
+                           f"{it.get('status')}, no queued or running run, idle {int(idle)} min"))
+
+    # The crew is finite (Rico, 2026-10-04): the most important first, the
+    # rest wait in the queue. Setting todo wakes the assignee, so each one
+    # takes at most its free run slots this pass.
+    def rank(it):
+        pri = str(it.get("priority") or "").lower()
+        nums = []
+        for lb in it.get("labels") or []:
+            hit = PRI_LABEL.match(str((lb or {}).get("name") or "")) if isinstance(lb, dict) else None
+            if hit:
+                nums.append(int(hit.group(1)))
+        return (PRIORITY.index(pri) if pri in PRIORITY else len(PRIORITY),
+                min(nums) if nums else sys.maxsize, it.get("createdAt") or "")
+
+    candidates.sort(key=lambda c: rank(c[0]))
+    taken, nudged, waiting = {}, set(), []
+    for it, action, reason in candidates:
+        if hold:
+            plan[it["id"]] = ("other", f"not released: {hold}")
+            continue
+        who = it.get("assigneeAgentId")
+        free = max(0, slots.get(who, 1) - max(busy.get(who, 0), busy_floor))
+        if not who or taken.get(who, 0) < free:
+            taken[who] = taken.get(who, 0) + 1
+            plan[it["id"]] = (action, reason)
+        elif action == "kickstart" and free == 0 and who not in nudged:
+            nudged.add(who)
+            plan[it["id"]] = (action, reason)
+        else:
+            waiting.append(it)
+    for k, it in enumerate(waiting, 1):
+        # Waiting for a free reviewer is queued, not blocked (Rico, 2026-10-04:
+        # the Blocked inbox holds only what is really stuck): a blocked one
+        # moves to backlog, and later passes release it from there.
+        plan[it["id"]] = ("queue" if it.get("status") == "blocked" else "review-next-pass",
+                          f"queued: priority {it.get('priority') or 'none'}, position {k}")
+
+    counts = {a: 0 for a in ACTIONS}
+    items, error_codes, skipped = [], {}, 0
+
+    def failed(item, what, e):
+        nonlocal errors
+        text, code = failure(e)
+        errors += 1
+        item["error"] = f"{what} failed: {text}"
+        if code is not None:
+            error_codes[str(code)] = error_codes.get(str(code), 0) + 1
+
+    posted = set()  # (repo, num, sha7) kickbacks already on Forge this pass
+    made = set()  # Bishop issue titles opened this pass
+    spec_steps = {(it.get("originKind"), it.get("originId")) for it in by_id.values()}
+
+    def forge_kickback(key, reason):
+        """One `REVIEW KICKBACK:` comment per PR and sha7, skipped when Forge already has it."""
+        if key in posted:
+            return
+        repo, num, sha7 = key
+        cpath_f = f"/repos/{urllib.parse.quote(repo, safe='/')}/issues/{num}/comments"
+        prior = forge.call("GET", cpath_f) or []
+        if not any(str((c or {}).get("body") or "").startswith("REVIEW KICKBACK:")
+                   and sha7 in str(c.get("body")) for c in prior):
+            forge.call("POST", cpath_f, {"body": f"REVIEW KICKBACK: {reason}"})
+        posted.add(key)
+
+    def apply_item(it, item, action, reason):
+        nonlocal skipped
+        ipath = f"/api/issues/{urllib.parse.quote(str(it.get('id')), safe='')}"
+        if apply and action == "escalate" and it.get("id") in escalations:
+            etitle = escalations[it["id"]]
+            if etitle not in made:
+                made.add(etitle)
+                try:
+                    if len(bishop) != 1:
+                        raise LookupError(f"{len(bishop)} agents named {ESCALATE_TO}")
+                    writer.call("POST", f"{ipath}/comments", {"body": f"board-sweep: escalate -- {reason}"})
+                    writer.call("POST", f"{cpath}/issues", {
+                        "title": etitle, "priority": "high", "status": "todo",
+                        "assigneeAgentId": bishop[0],
+                        "description": (f"Review task {it.get('identifier')} ({it.get('title')}) stalled "
+                                        f"after two board-sweep kickstarts with no progress. Assignee: "
+                                        f"{names.get(it.get('assigneeAgentId'))}. Unstick it, reassign "
+                                        "it, or cancel it with a reason.")})
+                except Exception as e:
+                    failed(item, "escalate", e)
+        if apply and action == "kickback":
+            try:
+                forge_kickback(kickbacks[it["id"]], reason)
+            except Exception as e:
+                failed(item, "forge comment", e)
+                return
+        if apply and action in ("todo", "kickstart") and not (EXEMPT.match(it.get("title") or "") or REVIEW.match(it.get("title") or "") or re.match(r"^\s*(?:Checks not green: \S+/\S+#\d+ @ [0-9a-f]{7,40}|Resolve merge-check read failure(?: on|:)? \S+/\S+#\d+(?: @ [0-9a-f]{7,40})?)$", it.get("title") or "", re.I)):
+            # A redispatch wakes paid work too: gate before either the comment
+            # or status write. Keep spec-task writes on this sweep's Writer.
+            try:
+                result = subprocess.run(
+                    [str(Path(__file__).resolve().parents[3] / "bin/spec-ready"),
+                     "--task-json"],
+                    input=json.dumps(it), text=True, capture_output=True, timeout=60)
+                if result.returncode != 0:
+                    skipped += 1
+                    item["skipped"] = "spec-ready hold: write-spec"
+                    if result.returncode == 1:
+                        held = json.loads(result.stdout)
+                        source = held.get("issueUrl") or str(it.get("id"))
+                        body_hash = held["bodyHash"]
+                        origin = ("spec-ready", f"{source}:{body_hash}")
+                        if origin not in spec_steps:
+                            writer.call("POST", f"{cpath}/issues", {
+                                "title": f"Write spec {source}", "status": "backlog",
+                                "assigneeAgentId": None, "originKind": origin[0], "originId": origin[1],
+                                "description": (f"Source: {source}\nMissing: " +
+                                                ", ".join(held["missing"]) +
+                                                "\nWrite the missing spec before implementation dispatch.")})
+                            spec_steps.add(origin)
+                    else:
+                        failed(item, "spec-ready", RuntimeError(result.stderr.strip() or "harness failed"))
+                    return
+            except Exception as e:
+                skipped += 1
+                item["skipped"] = "spec-ready hold: write-spec"
+                failed(item, "spec-ready", e)
+                return
+        if apply and action in ("cancel", "todo", "kickstart", "kickback", "queue"):
+            status = "todo" if action in ("todo", "kickstart") else "backlog" if action == "queue" else "cancelled"
+            # After the comment: its PATCH, and a kickstart's possible refusal note.
+            note = 1 if action == "kickstart" else 0
+            try:
+                writer.call("POST", f"{ipath}/comments", {"body": f"board-sweep: {action} -- {reason}"},
+                            reserve=1 + note)
+            except Exception as e:
+                failed(item, "comment", e)
+            else:
+                try:
+                    writer.call("PATCH", ipath, {"status": status}, reserve=note)
+                except Stop as s:
+                    if note and s.kind == "budget":
+                        # The reserved room: the kickstart comment never counts as a restart.
+                        try:
+                            writer.call("POST", f"{ipath}/comments", {
+                                "body": f"{KICKSTART_REFUSED} -- status not written: {s}"})
+                        except Exception as e2:
+                            failed(item, "refusal comment", e2)
+                    raise
+                except Exception as e:
+                    if isinstance(e, urllib.error.HTTPError) and e.code == 422 and status == "todo":
+                        skipped += 1
+                        item["skipped"] = f"board refused todo: {http_reason(e)}"
+                    else:
+                        failed(item, "status", e)
+                    if action == "kickstart":
+                        # Not a restart: say so, so it never counts toward escalation.
+                        try:
+                            writer.call("POST", f"{ipath}/comments", {
+                                "body": f"{KICKSTART_REFUSED} -- {item.get('skipped') or item.get('error')}"})
+                        except Exception as e2:
+                            failed(item, "refusal comment", e2)
+
+    # Everything goes out in priority order within the write budget (SOF-10747);
+    # within one priority, cleanups before releases, as before.
+    queued_ids = {c[0].get("id") for c in candidates}
+    order = [it for it in blocked + [a for a in active if a.get("id") in plan]
+             if it.get("id") not in queued_ids] + [c[0] for c in candidates]
+    order.sort(key=lambda it: rank(it)[:2] + (it.get("id") in queued_ids, it.get("createdAt") or ""))
+    stopped, planned = None, 0
+
+    def next_pass(item, action, reason, why):
+        item.update(action="next-pass", planned=action, reason=f"{why}; planned {action} -- {reason}")
+        counts["next-pass"] += 1
+
+    for it in order:
+        action, reason = plan[it.get("id")]
+        item = {"identifier": it.get("identifier"), "title": it.get("title"), "action": action,
+                "reason": reason, "assignee": names.get(it.get("assigneeAgentId"))}
+        items.append(item)
+        need = (1 if it.get("id") in escalations else 0) if action == "escalate" else COST.get(action, 0)
+        if need and not stopped and (writer.sent if apply else planned) + need > budget:
+            stopped = f"write budget of {budget} spent"
+        if need and stopped:
+            next_pass(item, action, reason, stopped.split(": ")[0])
+            continue
+        planned += need
+        ok_before = writer.ok
+        try:
+            apply_item(it, item, action, reason)
+        except Stop as s:
+            stopped = str(s)
+            next_pass(item, action, reason, stopped.split(": ")[0])
+            n = writer.ok - ok_before
+            if n:
+                limit = "the cap" if s.kind == "cap" else "the write budget ran out"
+                item["partial"] = f"{n} write{'s' if n != 1 else ''} went out before {limit}"
+            continue
+        counts[action] += 1
+    if stopped:
+        sys.stderr.write(f"board-sweep: {stopped}; {counts['next-pass']} items left for the next pass\n")
+
+    out = {"mode": "apply" if apply else "dry-run", "blocked_before": len(blocked), "actions": counts,
+           "errors": errors, "error_codes": error_codes, "skipped": skipped,
+           "write_budget": budget, "writes": writer.sent, "stopped": stopped, "items": items,
+           "queue": [{"identifier": it.get("identifier"), "priority": it.get("priority"),
+                      "assignee": names.get(it.get("assigneeAgentId"))} for it in waiting[:QUEUE_SHOWN]]}
+    if apply:
+        out["blocked_after"] = len(paged(board, f"{cpath}/issues?status=blocked"))
+    out["exit"] = 1 if errors else 0
+    print(json.dumps(out))
+    sys.exit(out["exit"])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -1,0 +1,14 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"rules": {
+		"max-lines-per-function": [
+			"error",
+			{ "max": 50, "skipBlankLines": true, "skipComments": true, "IIFEs": true }
+		],
+		"max-lines": ["error", { "max": 500, "skipBlankLines": true, "skipComments": true }],
+		"max-params": ["error", { "max": 4 }],
+		"max-depth": ["error", { "max": 4 }],
+		"no-unused-vars": "error"
+	},
+	"ignorePatterns": ["node_modules", "drizzle", "dist"]
+}

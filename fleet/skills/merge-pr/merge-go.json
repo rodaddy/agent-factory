@@ -1,0 +1,28 @@
+{
+	"id": "merge-go",
+	"version": 1,
+	"type": "noul",
+	"about": "sf#1375 (Rico, 2026-10-06): the probability a reviewed pull request at this head should merge now. merge-check merges at >= 0.60 and sends anything lower, unsure or without a signal to Smythe, Head of Review (no council, Rico, 2026-10-06); no signal is never a pass.",
+	"ask": "The state is a pull request the review lead has already reviewed at this exact head: `repo`, `title`, a bounded `body` excerpt, the changed `paths` with +/- line counts, the lead's `verdict` and review `round`, reviewer `findings` by severity, a `checks` summary, `backout` (whether the body states how to back the change out), `sensitive` (secrets, auth, deploy or workflow paths, or a deploy repo), and `precedents`. Precedents are changes of this kind that Rico or the author pushed through after a kickback; a close match is a reason to say yes. Should this pull request merge now? The review is done, so the default is yes: an approved review with no open blocker merges, and almost every reviewed change is a clear yes, routine or not. Answer yes when the lead approves (approve or approve-with-fixes) and nothing in the state names a concrete reason to stop. A sensitive path, a large change, missing factory checks, a check the reviewers ran themselves instead of CI, a note that the request does not merge or deploy anything, or wording such as needs a go, class B, board approval or Rico decides is process, not a blocker, and no reason to stop. A field that says `not recorded` is unknown, never a reason to stop. Answer no only for a concrete blocker named in the state: an open P0 or P1 finding the review upheld, red checks, a backout that would not restore the prior state (data, boxes or backups destroyed with no restore path), or a change the body or findings call unfinished, unsafe, or not what was asked.",
+	"confident": 0.6,
+	"policy": {
+		"yes": {
+			"verdict": "GO",
+			"order": 0,
+			"why": "clean review, green checks, stated backout"
+		},
+		"no": {
+			"verdict": "SMYTHE",
+			"order": 1,
+			"why": "open finding, red checks, no real backout, or unfinished"
+		}
+	},
+	"unsure": {
+		"verdict": "UNSURE"
+	},
+	"no_signal": {
+		"verdict": "NO_SIGNAL",
+		"why": "no Jev signal"
+	},
+	"examples": []
+}

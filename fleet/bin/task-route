@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""task-route: the one way a lead picks the seat for a task. Cheapest qualified
+seat first, then the least loaded, and Opus only when the task is marked as
+needing it (Rico 2026-10-08: "the only ones that get used all the time are the
+expensive ones, and the inexpensive ones which do just as good of a job sit
+there idle doing nothing"). It owns the pick; the board reads belong to
+`seat-load`, which it runs as a subprocess. It makes no HTTP call itself.
+
+Usage: task-route --skill <name> [--family anthropic|gpt] [--needs-opus]
+                  [--exclude <name>]... [--file <agents.json>] [--issue <Forge URL>]
+
+1. Qualified: seats in agents.json (default fleet/board/agents.json) whose
+   `skills` hold --skill, minus every --exclude (seat name or key, any case),
+   matched by `name` to a live agent from seat-load. A seat with no live
+   agent, or live status paused, error or terminated, drops.
+2. Tier from the live agent's model: haiku or luna 1; sonnet or sol 2; opus,
+   fable, anything else or missing 3 (unknown is expensive).
+   The model is the live agent's `model`, else the roster spec's `model`
+   (the declared model apply-agents.sh writes), because agent-scoped list
+   reads redact adapterConfig and seat-load then prints null.
+   --family anthropic keeps claude/haiku/sonnet/opus/fable models; --family gpt
+   keeps gpt-* models. A `<provider>/` prefix on the model is ignored.
+3. Without --needs-opus tier 3 drops, unless nothing else is left: then it is
+   kept and `task-route: fallback: no cheaper seat holds <skill>` goes to
+   stderr. With --needs-opus only tier 3 is kept.
+4. Load: the agent's `open` count from seat-load (todo, in_progress, in_review).
+5. Pick: lowest tier, then lowest load, then name. One JSON line on stdout:
+   {"agentId","name","model","tier","load"}.
+
+Board state: seat-load next to this script, or TASK_ROUTE_SEAT_LOAD (tests).
+It reads the board env (PAPERCLIP_*); task-route passes its env through.
+
+Exit: 0 picked; 1 nobody qualified (`task-route: no seat holds <skill>`, with
+`: all paused` when every holder is down); 2 bad usage or unreadable
+agents.json; 3 harness error (seat-load not runnable or not JSON lines). A
+non-zero seat-load exit is task-route's exit, with seat-load's stderr passed
+through.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_FILE = os.path.join(HERE, "..", "board", "agents.json")
+DOWN = ("paused", "error", "terminated")
+TIERS = ((1, ("haiku", "luna")), (2, ("sonnet", "sol")), (3, ("opus", "fable")))
+ANTHROPIC = ("claude-", "haiku", "sonnet", "opus", "fable")
+
+
+def die(msg, code):
+    sys.stderr.write(f"task-route: {msg}\n")
+    sys.exit(code)
+
+
+class UsageParser(argparse.ArgumentParser):
+    def error(self, message):
+        die(f"usage: {message}", 2)
+
+
+def base_model(model):
+    return model.rsplit("/", 1)[-1].lower() if isinstance(model, str) else ""
+
+
+def tier_of(model):
+    m = base_model(model)
+    for tier, words in TIERS:
+        if any(w in m for w in words):
+            return tier
+    return 3
+
+
+def in_family(model, family):
+    m = base_model(model)
+    if family == "gpt":
+        return m.startswith("gpt-")
+    if family == "anthropic":
+        return any(m.startswith(w) if w.endswith("-") else w in m for w in ANTHROPIC)
+    return True
+
+
+def seat_load():
+    """The board agents as seat-load prints them, one dict per line."""
+    path = os.environ.get("TASK_ROUTE_SEAT_LOAD") or os.path.join(HERE, "seat-load")
+    try:
+        r = subprocess.run([path], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, check=False)
+    except OSError as e:
+        die(f"cannot run seat-load: {type(e).__name__}", 3)
+    if r.returncode != 0:
+        sys.exit(r.returncode)
+    try:
+        rows = [json.loads(line) for line in r.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    except ValueError:
+        die("seat-load printed something that is not JSON lines", 3)
+    return [a for a in rows if isinstance(a, dict)]
+
+
+def read_roster(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        die(f"cannot read {path}: {type(e).__name__}", 2)
+    if not isinstance(data, dict):
+        die(f"cannot read {path}: not an object of seats", 2)
+    return data
+
+
+def main(argv):
+    p = UsageParser(prog="task-route", description="Pick the seat for a task.")
+    p.add_argument("--skill", required=True)
+    p.add_argument("--issue", help="source Forge issue URL; required for implement/work skills")
+    p.add_argument("--family", choices=("anthropic", "gpt"))
+    p.add_argument("--needs-opus", action="store_true")
+    p.add_argument("--exclude", action="append", default=[])
+    p.add_argument("--file", default=DEFAULT_FILE)
+    args = p.parse_args(argv)
+    skill = args.skill
+    roster = read_roster(args.file)
+    # The gate runs before seat-load: a refusal cannot select or wake a seat.
+    try:
+        gate = subprocess.run(
+            [os.path.join(HERE, "spec-ready"), "--task-json", "--queue-spec"],
+            input=json.dumps({"skill": skill, "description": args.issue or ""}).encode(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        die("spec-ready harness failed", 3)
+    if gate.returncode != 0:
+        sys.stderr.buffer.write(gate.stderr)
+        if gate.returncode == 1:
+            die("spec-ready held: write the spec before picking a work seat", 1)
+        die("spec-ready harness failed", 3)
+    excluded = {x.lower() for x in args.exclude}
+
+    holders = [
+        spec["name"]
+        for key, spec in roster.items()
+        if isinstance(spec, dict)
+        and isinstance(spec.get("name"), str)
+        and skill in (spec.get("skills") or [])
+        and key.lower() not in excluded
+        and spec["name"].lower() not in excluded
+    ]
+    if not holders:
+        die(f"no seat holds {skill}", 1)
+
+    live = {a.get("name"): a for a in seat_load()}
+    up = [live[n] for n in holders if n in live and live[n].get("status") not in DOWN]
+    if not up:
+        die(f"no seat holds {skill}: all paused", 1)
+
+    declared = {
+        spec["name"]: spec.get("model")
+        for spec in roster.values()
+        if isinstance(spec, dict) and isinstance(spec.get("name"), str)
+    }
+    seats = []
+    for a in up:
+        model = a.get("model")
+        if not (isinstance(model, str) and model):
+            model = declared.get(a.get("name"))
+        if in_family(model, args.family):
+            load = a.get("open") if isinstance(a.get("open"), int) else 0
+            seats.append({"agentId": a.get("id"), "name": a.get("name"), "model": model, "tier": tier_of(model), "load": load})
+    if args.needs_opus:
+        seats = [s for s in seats if s["tier"] == 3]
+    elif seats and all(s["tier"] == 3 for s in seats):
+        sys.stderr.write(f"task-route: fallback: no cheaper seat holds {skill}\n")
+    else:
+        seats = [s for s in seats if s["tier"] < 3]
+    if not seats:
+        what = "opus " if args.needs_opus else ""
+        fam = f" in family {args.family}" if args.family else ""
+        die(f"no {what}seat holds {skill}{fam}", 1)
+
+    best = min(seats, key=lambda s: (s["tier"], s["load"], s["name"]))
+    print(json.dumps(best))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)

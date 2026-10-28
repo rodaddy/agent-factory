@@ -1,0 +1,10 @@
+# Recovery canary fixture manifest: one scenario per line, `<key> <owner/repo> <pr> [<pr2>]`.
+
+clean-first-pr rodaddy/canary 1
+author-fix-round rodaddy/canary 2
+round-three-release rodaddy/canary 3
+missing-evidence rodaddy/canary 4
+fake-evidence rodaddy/canary 5
+same-head-no-progress rodaddy/canary 6
+recreate-reopen rodaddy/canary 7 8   # old, then new
+concurrent-events rodaddy/canary 9

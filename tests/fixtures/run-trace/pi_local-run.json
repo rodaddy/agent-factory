@@ -1,0 +1,93 @@
+{
+	"id": "31c02a62-c04b-43b4-8fe3-375d62e2d885",
+	"companyId": "a079aa52-a28a-46a8-b959-a6086b549417",
+	"agentId": "51389d6c-b074-4a32-99b5-4160ec082f9f",
+	"status": "succeeded",
+	"startedAt": "2026-10-01T21:17:25.599Z",
+	"finishedAt": "2026-10-01T21:17:40.432Z",
+	"createdAt": "2026-10-01T21:17:25.571Z",
+	"error": null,
+	"errorCode": null,
+	"runnerProfileJson": {
+		"adapterDispatch": {
+			"adapterType": "pi_local"
+		}
+	},
+	"contextSnapshot": {
+		"issueId": "5a7d4d9d-becc-4c77-a7f2-218ba0a87ac5",
+		"taskId": "5a7d4d9d-becc-4c77-a7f2-218ba0a87ac5",
+		"wakeReason": "issue_reopened_via_comment"
+	},
+	"usageJson": {
+		"model": "bifrost/claudex/gpt-6-luna",
+		"biller": "bifrost",
+		"costUsd": 0,
+		"provider": "bifrost",
+		"costStatus": "reported",
+		"billingType": "unknown",
+		"inputTokens": 17328,
+		"usageSource": "session_delta",
+		"freshSession": false,
+		"outputTokens": 55,
+		"sessionReused": true,
+		"rawInputTokens": 84109,
+		"sessionRotated": false,
+		"configFreshness": {
+			"session": {
+				"reset": false,
+				"categories": [
+					"adapter",
+					"adapterConfig",
+					"agentRuntimeConfig",
+					"instructions",
+					"issueOverrides",
+					"workspaceConfig",
+					"environment",
+					"envBindings",
+					"secrets",
+					"runtimeSkills"
+				],
+				"resetReasons": [],
+				"nextFingerprint": "v1:sha256:a0b5f8122b49707fc210c9c0a6668eedfcda25df696c03fc4be1b97a957ec413",
+				"changedCategories": [],
+				"taskSessionReused": true,
+				"fingerprintVersion": 1,
+				"taskSessionAvailable": true,
+				"storedFingerprintPresent": true
+			},
+			"version": 1,
+			"workspace": {
+				"action": "create",
+				"reasons": [],
+				"categories": [
+					"mode",
+					"projectWorkspace",
+					"strategy",
+					"repo",
+					"lifecycleCommands",
+					"runtimeServices",
+					"environment",
+					"realization"
+				],
+				"reuseRequested": false,
+				"nextFingerprint": "v1:sha256:5ce92b3028e02bb43412e58e850d1e999e08479f4bdf8a112e1f38ad7abb7065",
+				"workspaceReused": false,
+				"activeWorkspaceId": null,
+				"changedCategories": [],
+				"storedFingerprint": null,
+				"fingerprintVersion": 1,
+				"inferredFingerprint": null,
+				"previousWorkspaceId": null,
+				"configSnapshotRefreshed": false,
+				"storedFingerprintPresent": false
+			}
+		},
+		"rawOutputTokens": 246,
+		"cachedInputTokens": 18432,
+		"taskSessionReused": true,
+		"persistedSessionId": "/home/operator/.pi/paperclips/2026-10-01T19-24-19-462Z-51389d6c-b074-4a32-99b5-4160ec082f9f.jsonl",
+		"cacheAdjustedCostUsd": 0,
+		"rawCachedInputTokens": 76288,
+		"sessionRotationReason": null
+	}
+}

@@ -1,0 +1,28 @@
+{
+	"schema": "fleet-audit-snapshot/1",
+	"window": { "label": "4h", "from": "2026-10-07T00:00:00Z", "to": "2026-10-07T04:00:00Z" },
+	"collectedAt": "2026-10-07T04:00:05Z",
+	"agents": [
+		{ "id": "a1", "name": "Greene", "status": "running" },
+		{ "id": "a2", "name": "Vance", "status": "paused" }
+	],
+	"runs": [
+		{ "id": "r1", "agentId": "a1", "status": "succeeded", "issueId": "i1", "inputTokens": 900 },
+		{ "id": "r2", "agentId": "a1", "status": "failed", "issueId": "i1", "traced": false },
+		{ "id": "r3", "agentId": "a1", "status": "queued", "issueId": "i1" },
+		{ "id": "r4", "agentId": "a2", "status": "cancelled", "issueId": "i1" }
+	],
+	"issues": [
+		{ "id": "i1", "identifier": "SOF-1", "status": "todo", "assigneeAgentId": "a2" },
+		{
+			"id": "i2",
+			"identifier": "SOF-2",
+			"title": "Review rodaddy/x#7 @ abcdef0",
+			"status": "blocked",
+			"assigneeAgentId": "a1",
+			"updatedAt": "2026-10-05T00:00:00Z"
+		}
+	],
+	"recovery": { "activeByCause": { "stale_run": 3 } },
+	"errors": [{ "source": "langfuse", "message": "HTTP 401" }]
+}

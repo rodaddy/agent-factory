@@ -1,0 +1,949 @@
+#!/usr/bin/env python3
+"""pi-employee: the per-employee Pi launcher (sf#1493 P0.3). Paperclip's
+pi_local adapter runs it as its `command` in place of `pi`; it fits the run to
+the seat named by FLEET_EMPLOYEE, then execs the real pi.
+
+Usage: pi-employee <pi argv...>   (exactly what the adapter would pass to pi)
+
+Fleet root: env PI_EMPLOYEE_FLEET_ROOT, else the parent of this script's
+directory (~/fleet on a box, fleet/ in the repo).
+
+0. Every invocation loads the fleet-wide live-catalog extension
+   <root>/pi-extensions/fleet-proxy-models/index.ts (registers `fleet-proxy`
+   from GET /v1/models on each Pi start; no seat models file). Missing: exit 3.
+1. argv holding --version, -v, --help or -h: exec pi with argv and env
+   unchanged. --list-models (Paperclip's model check) execs pi with
+   `-ne -e <live-catalog ext>` prepended and env unchanged; no profile is read.
+2. Otherwise FLEET_EMPLOYEE (lowercased, ^[a-z][a-z0-9-]*$) names the seat and
+   <root>/pi/profiles/<seat>.json is its profile (v0: tools, extensions,
+   agentDir; see fleet/pi/profiles/README.md). Every extension must exist, and
+   `pi --version` must match the pin in <root>/pi/versions.json.
+3. argv is rewritten: every --tools value becomes the profile's tools (one
+   --tools is added at the front when absent), and `-ne` then `-e <abs path>`
+   per extension go first, the live-catalog extension before the profile's.
+   Everything else keeps its order; the prompt stays last.
+   PI_CODING_AGENT_DIR is set to the seat's agentDir (created, mode 700), and
+   TMPDIR, TMP and TEMP to <agentDir>/tmp (created, mode 700), overriding the
+   caller's. An agentDir or temp dir resolving (realpath) to or under
+   /tmp, /private/tmp or /var/tmp is refused before anything is created.
+   <agentDir>/settings.json, when absent, is written as the cheapest Pi
+   compaction (COMPACTION below: keep 4k recent tokens); an existing file is
+   left untouched.
+   FLEET_MODEL and FLEET_EFFORT are set from argv, overriding the caller's
+   (sf#1930): FLEET_MODEL is the --model value without a `fleet-proxy/`
+   prefix or a `:<level>` suffix, FLEET_EFFORT the --thinking value (else that
+   suffix), so forge-post's run evidence names what this run uses. Absent
+   from argv: the caller's value stays.
+4. A run whose argv carries `--mode json` (or `--mode=json`) runs pi as a
+   child with its stdout piped through pi-stdout-filter, found next to this
+   script (sf#1602): Paperclip keeps only the events its parsers read. stdin
+   and stderr pass straight through. Filter missing or not startable: one
+   stderr warning, then the unfiltered exec. Any other run execs pi.
+5. A filtered run stops everything it started, and nothing else (sf#2001).
+   Stop causes: SIGTERM, SIGINT or SIGHUP to this launcher (never forwarded;
+   the first one wins), a disconnect (POLLHUP or POLLERR on fd 1, polled once
+   a second with the mask POLLHUP; fd 0 is at end-of-file in normal operation
+   and is never polled), and a filter that exits non-zero while pi runs. A
+   cause is seen at the next one-second tick. What the run started is what
+   this launcher recorded:
+   - pi runs as the leader of its own process group, which is signalled only
+     while pi is unreaped. Hand-run on a terminal, pi is therefore in a
+     background group, and a pi that reads the terminal is stopped by SIGTTIN.
+   - a ledger of pi's descendants as (pid, start time), taken from one process
+     listing at pi's start and on every tick, so a child that left the group,
+     changed directory or lost its parent is still known. While pi is
+     unreaped every listing also records the members of pi's group, and a
+     tick lists before it reaps, so a pi that exited between two ticks leaves
+     its group recorded.
+   - at stop time only, and relied on for nothing: processes of this uid whose
+     environment holds PAPERCLIP_RUN_ID=<this run> (not readable for an Apple
+     system binary), and the run's callback bridge, trusted only when
+     $PAPERCLIP_BRIDGE_QUEUE_DIR/server.pid names a process of this uid whose
+     argv holds both paperclip-bridge-server.mjs and
+     /.paperclip-runtime/runs/<this run>/; a pid file that is not 1 to 10
+     ASCII digits is not trusted. Both need a PAPERCLIP_RUN_ID matching
+     [A-Za-z0-9_-]+; without one the last line ends `; no run id`.
+   Only processes of this uid are signalled, and never this launcher, its
+   parent, pid 1 or any pid on this launcher's parent chain in the listing at
+   hand: none of them is adopted from any source, and no walk descends from
+   one, so a wrapper above the launcher that carries the run id is left
+   alone. The stop: SIGTERM to the group and the ledger, a grace, SIGKILL to
+   the group, then the same for what is left by pid; a trusted bridge's pid
+   file is unlinked once the bridge is gone. The grace is 5 s (env
+   PI_EMPLOYEE_STOP_GRACE, seconds, for tests) and the whole stop has one
+   deadline, 2 x grace + 4 s: 14 s, plus the tick before it, against the
+   adapter's 20 s SIGKILL of a locally run launcher. Every listing, finder
+   and wait of the stop checks the deadline first, and a listing's timeout is
+   the lesser of 1 s and the time left. Once the deadline has passed, or a
+   step raised an unexpected error, no new listing is taken: the final
+   SIGKILLs go to the group and, by pid, to the rows of the last successful
+   listing, so the stop ends within the deadline plus about 2.5 s (one
+   listing in flight, the count listing, the filter wait).
+   When a listing of the stop fails, signals by pid go to the ledger as last
+   confirmed only if the last successful listing was at most 10 s before the
+   stop began; older than that, nothing is signalled by pid. Within that
+   window a recorded pid is signalled on the strength of signal 0 alone; a
+   stranger would need the pid reused inside those seconds.
+   Then one stderr line, written without blocking,
+   `pi-employee: stopped on <cause>; <n> run processes stopped`, followed when
+   true by `; <m> still alive`, `; no run id`, `; listing failed`.
+   When pi has exited and the filter has not, the launcher waits up to 0.5 s
+   for the filter, then keeps ticking until the filter is done; a stop cause
+   then stops the ledger by pid only.
+   Not stopped: (1) a process that left pi's group and whose whole ancestry
+   died inside one tick before a walk saw it; (2) a child forked between the
+   last listing and the kill of its parent. A run that is exec'ed (no
+   `--mode json`, or the filter did not start) has none of this.
+   Limits: every process lookup has a timeout of 1 s or less. Linux /proc
+   enumeration and reads share one alarm deadline; an expired lookup returns
+   no partial data. A kernel operation that cannot be interrupted, or a `ps`
+   process that cannot be killed, can still exceed that budget.
+
+pi: env PI_EMPLOYEE_PI_BIN, else `pi` on PATH. No network. The prompt and env
+values are never printed.
+
+Exit: whatever pi exits (exec, or pi's own code or signal when filtered);
+3 refused (bad seat, profile, extension, version or OS temp dir), one
+`pi-employee: ...` line on stderr; after a stop, 128 + the signal (143, 130,
+129), or 1 for a disconnect or a failed filter.
+"""
+from contextlib import contextmanager
+import json
+import os
+import re
+import select
+import signal
+import subprocess
+import sys
+import time
+
+FILTER = "pi-stdout-filter"
+GRACE = 5.0
+RUN_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+PID_FILE_RE = re.compile(r"[0-9]{1,10}")
+# A failed stop listing falls back to the recorded pids only this fresh.
+FALLBACK_AGE = 10.0
+BRIDGE_ENTRY = "paperclip-bridge-server.mjs"
+LINUX = sys.platform.startswith("linux")
+# One listing row: parent pid, process group, uid, state, start time.
+PPID, PGID, UID, STAT, START = range(5)
+PIN_KEY = "@earendil-works/pi-coding-agent"
+PASSTHROUGH = {"--list-models", "--version", "-v", "--help", "-h"}
+MODELS_EXT = os.path.join("pi-extensions", "fleet-proxy-models", "index.ts")
+SEAT_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+TOOL_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+OS_TMP = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp")
+# Pi settings a seat gets when its agentDir has none. Paperclip already starts a
+# fresh session each run (agents.json sessionCompaction), so compaction only
+# fires inside one long run; keeping 4k recent tokens is the cheap part.
+COMPACTION = {"compaction": {"enabled": True, "reserveTokens": 16384, "keepRecentTokens": 4000}}
+
+
+def refuse(msg):
+    sys.stderr.write("pi-employee: %s\n" % msg)
+    sys.exit(3)
+
+
+def not_os_tmp(path):
+    real = os.path.realpath(path)
+    for banned in OS_TMP:
+        if os.path.commonpath([real, banned]) == banned:
+            refuse("%s resolves to %s, under %s: seat temp never lives in "
+                   "the OS temp dir" % (path, real, banned))
+
+
+def load_profile(root, seat):
+    path = os.path.join(root, "pi", "profiles", seat + ".json")
+
+    def bad(what):
+        refuse("profile %s: %s" % (path, what))
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        bad("not found")
+    except (OSError, ValueError) as e:
+        bad("unreadable: %s" % type(e).__name__)
+    if not isinstance(data, dict):
+        bad("not a JSON object")
+    tools = data.get("tools")
+    if not isinstance(tools, list) or not tools:
+        bad("tools must be a non-empty list")
+    for t in tools:
+        if not isinstance(t, str) or not TOOL_RE.match(t):
+            bad("tools: bad tool name")
+    exts = data.get("extensions")
+    if not isinstance(exts, list) or not all(isinstance(e, str) and e for e in exts):
+        bad("extensions must be a list of paths")
+    agent_dir = data.get("agentDir", "~/.pi/seats/" + seat)
+    if not isinstance(agent_dir, str) or not agent_dir:
+        bad("agentDir must be a string")
+    return tools, exts, os.path.expanduser(agent_dir)
+
+
+def pinned(root):
+    path = os.path.join(root, "pi", "versions.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            want = json.load(f)[PIN_KEY]
+    except (OSError, ValueError, KeyError, TypeError):
+        refuse("versions %s: no %s pin" % (path, PIN_KEY))
+    return want
+
+
+def installed(pi):
+    try:
+        out = subprocess.run(
+            [pi, "--version"], capture_output=True, text=True, timeout=30
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "<none>"
+    tokens = out.split()
+    return tokens[-1] if tokens else "<none>"
+
+
+def rewrite(argv, tools, ext_paths):
+    tool_list = ",".join(tools)
+    out = []
+    seen = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--tools" and i + 1 < len(argv):
+            out += ["--tools", tool_list]
+            seen = True
+            i += 2
+            continue
+        if a.startswith("--tools="):
+            out.append("--tools=" + tool_list)
+            seen = True
+        else:
+            out.append(a)
+        i += 1
+    head = ["-ne"]
+    for p in ext_paths:
+        head += ["-e", p]
+    if not seen:
+        head += ["--tools", tool_list]
+    return head + out
+
+
+def main():
+    argv = sys.argv[1:]
+    pi = os.environ.get("PI_EMPLOYEE_PI_BIN") or "pi"
+    root = os.environ.get("PI_EMPLOYEE_FLEET_ROOT") or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+    if any(a in PASSTHROUGH for a in argv) and "--list-models" not in argv:
+        os.execvpe(pi, [pi] + argv, os.environ)
+    models_ext = os.path.abspath(os.path.join(root, MODELS_EXT))
+    if not os.path.exists(models_ext):
+        refuse("extension not found: %s" % models_ext)
+    if "--list-models" in argv:
+        os.execvpe(pi, [pi, "-ne", "-e", models_ext] + argv, os.environ)
+
+    seat = (os.environ.get("FLEET_EMPLOYEE") or "").lower()
+    if not SEAT_RE.match(seat):
+        refuse("FLEET_EMPLOYEE is missing or not a seat name")
+
+    tools, exts, agent_dir = load_profile(root, seat)
+    not_os_tmp(agent_dir)
+    not_os_tmp(os.path.join(agent_dir, "tmp"))
+    ext_paths = [models_ext]
+    for e in exts:
+        p = os.path.abspath(os.path.join(root, os.path.expanduser(e)))
+        if not os.path.exists(p):
+            refuse("extension not found: %s" % p)
+        ext_paths.append(p)
+
+    want = pinned(root)
+    got = installed(pi)
+    if got != want:
+        refuse("pi %s installed, fleet pins %s" % (got, want))
+
+    env = dict(os.environ)
+    env["PI_CODING_AGENT_DIR"] = agent_dir
+    os.makedirs(agent_dir, mode=0o700, exist_ok=True)
+    write_default_settings(agent_dir)
+    seat_tmp = os.path.join(agent_dir, "tmp")
+    os.makedirs(seat_tmp, exist_ok=True)
+    not_os_tmp(seat_tmp)
+    os.chmod(seat_tmp, 0o700)
+    env["TMPDIR"] = env["TMP"] = env["TEMP"] = seat_tmp
+    env.update(run_model(argv))
+    cmd = [pi] + rewrite(argv, tools, ext_paths)
+    if json_mode(argv):
+        run_filtered(cmd, env)
+    os.execvpe(pi, cmd, env)
+
+
+def write_default_settings(agent_dir):
+    """Create <agentDir>/settings.json with COMPACTION; never replace one."""
+    final = os.path.join(agent_dir, "settings.json")
+    tmp = final + ".tmp.%s" % os.getpid()
+    try:
+        with open(tmp, "x", encoding="utf-8") as f:
+            json.dump(COMPACTION, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, final)
+        except FileExistsError:
+            pass
+    finally:
+        os.unlink(tmp)
+
+
+def flag(argv, name):
+    """The last value of `name` in argv, as `name v` or `name=v`, else None."""
+    val = None
+    for i, a in enumerate(argv):
+        if a == name and i + 1 < len(argv):
+            val = argv[i + 1]
+        elif a.startswith(name + "="):
+            val = a[len(name) + 1:]
+    return val
+
+
+def run_model(argv):
+    """FLEET_MODEL and FLEET_EFFORT as this run's argv names them (sf#1930)."""
+    out = {}
+    model = flag(argv, "--model")
+    effort = flag(argv, "--thinking")
+    if model:
+        model, _, level = model.partition(":")
+        if model.startswith("fleet-proxy/"):
+            model = model[len("fleet-proxy/"):]
+        out["FLEET_MODEL"] = model
+        effort = effort or level
+        # A run that names its model but no level must not inherit a stale one.
+        out["FLEET_EFFORT"] = effort
+    elif effort:
+        out["FLEET_EFFORT"] = effort
+    return out
+
+
+def json_mode(argv):
+    return "--mode=json" in argv or any(
+        a == "--mode" and b == "json" for a, b in zip(argv, argv[1:])
+    )
+
+
+def stop_grace():
+    try:
+        grace = float(os.environ.get("PI_EMPLOYEE_STOP_GRACE", ""))
+    except ValueError:
+        return GRACE
+    return grace if 0 < grace < float("inf") else GRACE
+
+
+def run_ps(args, timeout=1.0):
+    """Text of one /bin/ps call, or None when it failed or outlived `timeout`
+    (1 s at most)."""
+    env = dict(os.environ, LC_ALL="C", TZ="UTC")
+    try:
+        out = subprocess.run(["/bin/ps"] + args, capture_output=True,
+                             timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.decode("utf-8", "replace")
+
+
+class ProcTimeout(Exception):
+    """The Linux process reader exhausted its total budget."""
+
+
+@contextmanager
+def proc_budget(timeout):
+    """Bound even a blocked proc read. The launcher is single-threaded.
+
+    Never leave our alarm installed or restart a caller's timer from scratch.
+    ProcTimeout is deliberately not one of the per-pid, skippable errors.
+    """
+    if timeout <= 0:
+        raise ProcTimeout()
+
+    def expired(_signum, _frame):
+        raise ProcTimeout()
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    started = time.monotonic()
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    if previous_timer[0] and previous_timer[0] <= timeout:
+        # A shorter caller-owned deadline wins; do not replace or defer it.
+        raise ProcTimeout()
+    signal.signal(signal.SIGALRM, expired)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        yield
+    finally:
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        finally:
+            # Expiry during disarm must still restore the caller's state.
+            signal.signal(signal.SIGALRM, previous_handler)
+            delay, interval = previous_timer
+            if delay:
+                delay = max(0.000001, delay - (time.monotonic() - started))
+            signal.setitimer(signal.ITIMER_REAL, delay, interval)
+
+
+def linux_stat(pid):
+    """(ppid, pgid, state, starttime) from /proc/<pid>/stat; raises if gone."""
+    with open("/proc/%d/stat" % pid, "rb") as f:
+        # The command name may hold spaces and brackets: split after the LAST ")".
+        tail = f.read().rsplit(b")", 1)[1].split()
+    state = tail[0].decode("ascii", "replace")
+    return int(tail[1]), int(tail[2]), state, int(tail[19])
+
+
+def linux_uid(pid):
+    with open("/proc/%d/status" % pid, "rb") as f:
+        for line in f:
+            if line.startswith(b"Uid:"):
+                return int(line.split()[1])
+    raise ValueError("no Uid line")
+
+
+def linux_pids():
+    return [int(name) for name in os.listdir("/proc") if name.isdigit()]
+
+
+def list_procs(timeout=1.0):
+    """Every process as {pid: (ppid, pgid, uid, state, start time)}, or None
+    when the listing failed. A start time is only ever compared for equality
+    with another one from this function (or from env_matches)."""
+    rows = {}
+    if LINUX:
+        try:
+            with proc_budget(timeout):
+                for pid in linux_pids():
+                    try:
+                        ppid, pgid, state, start = linux_stat(pid)
+                        rows[pid] = (ppid, pgid, linux_uid(pid), state, start)
+                    except (OSError, ValueError, IndexError):
+                        continue
+        except (OSError, ProcTimeout):
+            return None
+    else:
+        # One -o per column; lstart is last because it holds spaces. LC_ALL=C
+        # and TZ=UTC keep it the same string for the same process all run long.
+        text = run_ps(["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=",
+                       "-o", "uid=", "-o", "stat=", "-o", "lstart="], timeout)
+        if text is None:
+            return None
+        for line in text.splitlines():
+            f = line.split()
+            if len(f) != 10:
+                continue
+            try:
+                rows[int(f[0])] = (int(f[1]), int(f[2]), int(f[3]), f[4],
+                                   " ".join(f[5:]))
+            except ValueError:
+                continue
+    # A listing without this very process is not a listing.
+    return rows if os.getpid() in rows else None
+
+
+def env_matches(run_id, uid, timeout=1.0):
+    """(pid, start time) of every process of `uid` whose environment holds
+    PAPERCLIP_RUN_ID=<run_id>, pid and start time from one read; None when the
+    read failed. On macOS the text searched is arguments plus environment, and
+    an Apple system binary shows no environment at all."""
+    token = "PAPERCLIP_RUN_ID=" + run_id
+    found = []
+    if LINUX:
+        try:
+            with proc_budget(timeout):
+                for pid in linux_pids():
+                    try:
+                        if linux_uid(pid) != uid:
+                            continue
+                        start = linux_stat(pid)[3]
+                        with open("/proc/%d/environ" % pid, "rb") as f:
+                            hit = token.encode() in f.read().split(b"\0")
+                        if hit and linux_stat(pid)[3] == start:
+                            found.append((pid, start))
+                    except (OSError, ValueError, IndexError):
+                        continue
+        except (OSError, ProcTimeout):
+            return None
+        return found
+    text = run_ps(["-E", "-ww", "-U", str(uid), "-o", "pid=", "-o", "lstart=",
+                   "-o", "command="], timeout)
+    if text is None:
+        return None
+    for line in text.splitlines():
+        f = line.split(None, 6)
+        if len(f) == 7 and f[0].isdigit() and token in f[6].split():
+            found.append((int(f[0]), " ".join(f[1:6])))
+    return found
+
+
+def live_argv(pid, timeout=1.0):
+    """The live argv of `pid` as one string, or None when it cannot be read."""
+    if LINUX:
+        try:
+            with proc_budget(timeout):
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except (OSError, ProcTimeout):
+            return None
+    return run_ps(["-ww", "-o", "command=", "-p", str(pid)], timeout)
+
+
+def send(pid, sig, group=False):
+    # On macOS killpg on a group whose only member is the unreaped zombie
+    # leader raises PermissionError: the normal case once pi's tree obeyed.
+    try:
+        (os.killpg if group else os.kill)(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+class Overrun(Exception):
+    """The stop's one deadline passed before its last step."""
+
+
+class Run:
+    """What one filtered run started, and the stop routine (sf#2001)."""
+
+    def __init__(self, pi_pid, flt_pid):
+        self.pi = pi_pid
+        self.flt = flt_pid
+        self.pi_reaped = False
+        self.flt_reaped = False
+        self.uid = os.getuid()
+        # Never adopted, so never signalled: this launcher, its parent, pid 1,
+        # and the filter (reaped by its own pid, never counted); every listing
+        # adds this launcher's parent chain in it.
+        self.fixed = {os.getpid(), os.getppid(), 1, flt_pid}
+        self.skip = set(self.fixed)
+        self.rows = None  # the last successful listing
+        self.rows_at = 0.0  # its monotonic time
+        self.entered = 0.0  # monotonic time the stop routine began
+        self.ledger = {}  # pid -> (start time, uid)
+        self.signalled = set()  # (pid, start time) sent a signal by pid or group
+        self.counted = set()  # (pid, start time) of ours seen alive by the stop
+        self.grace = stop_grace()
+        run_id = os.environ.get("PAPERCLIP_RUN_ID") or ""
+        self.run_id = run_id if RUN_ID_RE.fullmatch(run_id) else None
+        self.bridge = None  # (pid, start time, pid file) once trusted
+        self.listing_failed = False
+        self.deadline = 0.0
+
+    def pi_done(self):
+        self.pi_reaped = True
+        self.ledger.pop(self.pi, None)
+
+    def reap(self, pid):
+        """True once `pid` (pi or the filter) is reaped; each is reaped once."""
+        if pid == self.pi and self.pi_reaped or pid == self.flt and self.flt_reaped:
+            return True
+        try:
+            done = os.waitpid(pid, os.WNOHANG)[0]
+        except ChildProcessError:
+            done = pid
+        if done and pid == self.pi:
+            self.pi_done()
+        elif done:
+            self.flt_reaped = True
+        return bool(done)
+
+    def walk(self, rows):
+        """Confirm the ledger against one listing, then adopt pi and every
+        member of its group of this uid (while pi is unreaped), then every
+        descendant of each entry, to any depth. First the listing is recorded
+        and this launcher's parent chain in it joins the never-signalled set:
+        a wrapper above the launcher can carry the run id."""
+        self.rows, self.rows_at = rows, time.monotonic()
+        chain = set()
+        pid = os.getpid()
+        while pid > 1 and pid in rows and pid not in chain:
+            chain.add(pid)
+            pid = rows[pid][PPID]
+        self.skip = self.fixed | chain
+        for pid in list(self.ledger):
+            row = rows.get(pid)
+            # Gone, or a stranger now holds the pid: its children are not ours.
+            if (row is None or row[START] != self.ledger[pid][0]
+                    or pid in self.skip):
+                del self.ledger[pid]
+        if not self.pi_reaped:
+            # An unreaped pi, zombie included, still owns its pid, so the group
+            # id is safe to read. A dead pi's children have parent pid 1: the
+            # group is the only thing that still ties them to the run.
+            for pid, row in rows.items():
+                if pid == self.pi or (row[PGID] == self.pi
+                                      and row[UID] == self.uid
+                                      and pid not in self.skip):
+                    self.ledger.setdefault(pid, (row[START], row[UID]))
+        kids = {}
+        for pid, row in rows.items():
+            kids.setdefault(row[PPID], []).append(pid)
+        todo = list(self.ledger)
+        while todo:
+            for pid in kids.get(todo.pop(), ()):
+                if pid in self.ledger or pid in self.skip:
+                    continue
+                # A row of another uid is adopted (its children may be the
+                # run's) and is never signalled or counted.
+                self.ledger[pid] = (rows[pid][START], rows[pid][UID])
+                todo.append(pid)
+
+    def tick_walk(self):
+        rows = list_procs()
+        if rows is not None:
+            self.walk(rows)
+
+    def left(self):
+        """Seconds to the stop's deadline; raises once it has passed."""
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise Overrun()
+        return left
+
+    def look(self):
+        """One stop-routine listing: walked, and what is ours and alive
+        counted. The deadline is checked first, the timeout is the lesser of
+        1 s and the time left, and a failed listing is retried once when at
+        least 1 s is left. None when it failed; the ledger then stays as last
+        confirmed."""
+        rows = list_procs(min(1.0, self.left()))
+        if rows is None and self.left() >= 1:
+            rows = list_procs()
+        if rows is None:
+            self.listing_failed = True
+        else:
+            self.walk(rows)
+        self.count(rows)
+        return rows
+
+    def live(self, rows):
+        """Ledger pids of this uid that are alive: in `rows` with the recorded
+        start time and not a zombie. With no listing, every entry that answers
+        signal 0, start time unchecked, and none at all when the last
+        successful listing is too old to stand on."""
+        out = []
+        if rows is None and not self.fallback_ok():
+            return out
+        for pid, (start, uid) in self.ledger.items():
+            if uid != self.uid or pid in self.skip:
+                continue
+            if rows is None:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    continue
+            elif (pid not in rows or rows[pid][START] != start
+                  or rows[pid][STAT].startswith("Z")):
+                continue
+            out.append(pid)
+        return out
+
+    def fallback_ok(self):
+        """The last successful listing was at most FALLBACK_AGE before the
+        stop routine began (any listing of the stop itself is)."""
+        return (self.rows is not None
+                and self.rows_at >= self.entered - FALLBACK_AGE)
+
+    def count(self, rows):
+        for pid in self.live(rows):
+            self.counted.add((pid, self.ledger[pid][0]))
+
+    def signal(self, rows, sig, fresh=False, group_sent=False):
+        """`sig` by pid to every live entry; only the not yet signalled ones
+        when `fresh`; `group_sent` marks pi's group as already signalled."""
+        for pid in self.live(rows):
+            key = (pid, self.ledger[pid][0])
+            if fresh and key in self.signalled:
+                continue
+            self.signalled.add(key)
+            in_group = pid == self.pi or (rows is not None
+                                          and rows[pid][PGID] == self.pi)
+            if not (group_sent and in_group):
+                send(pid, sig)
+
+    def pause(self, end, step=0.5):
+        """Sleep one step toward `end`; False once `end` has passed."""
+        left = self.left()
+        now = time.monotonic()
+        if now >= end:
+            return False
+        time.sleep(min(step, end - now, left))
+        return True
+
+    def group_quiet(self, rows):
+        """pi is a zombie or absent and no member of its group is alive."""
+        if rows is None:
+            return False
+        return not any(
+            not row[STAT].startswith("Z")
+            for pid, row in rows.items()
+            if pid == self.pi or row[PGID] == self.pi
+        )
+
+    def adopt_by_id(self, rows):
+        """The environment matches and the bridge; both need the run id."""
+        if self.run_id is None:
+            return
+        found = env_matches(self.run_id, self.uid, min(1.0, self.left()))
+        if found is None:
+            self.listing_failed = True
+        for pid, start in found or ():
+            if pid not in self.skip:
+                self.ledger.setdefault(pid, (start, self.uid))
+        queue = os.environ.get("PAPERCLIP_BRIDGE_QUEUE_DIR")
+        if not queue or rows is None:
+            return
+        pid_file = queue + "/server.pid"
+        self.left()
+        try:
+            with open(pid_file, encoding="ascii") as f:
+                text = f.read().strip()
+        except (OSError, ValueError):
+            return
+        pid = int(text) if PID_FILE_RE.fullmatch(text) else 0
+        row = rows.get(pid)
+        if pid <= 0 or pid in self.skip or row is None or row[UID] != self.uid:
+            return
+        argv = live_argv(pid, min(1.0, self.left()))
+        if argv is None:
+            self.listing_failed = True
+        elif (BRIDGE_ENTRY in argv
+              and "/.paperclip-runtime/runs/%s/" % self.run_id in argv):
+            self.ledger.setdefault(pid, (row[START], row[UID]))
+            self.bridge = (pid, row[START], pid_file)
+
+    def stop(self, cause, code):
+        """Stop the group, the ledger and the bridge inside one deadline,
+        report one line, exit `code`. Never returns."""
+        self.entered = time.monotonic()
+        self.deadline = self.entered + 2 * self.grace + 4
+        try:
+            if not self.pi_reaped:
+                self.stop_group()
+            self.stop_ledger()
+        except Exception:
+            # The deadline passed (Overrun) or a step failed: no new listing.
+            # The final kills go from the last successful one, if it is fresh
+            # enough to stand on.
+            try:
+                rows = self.rows if self.fallback_ok() else None
+                if not self.pi_reaped:
+                    send(self.pi, signal.SIGKILL, group=True)
+                self.count(rows)
+                self.signal(rows, signal.SIGKILL)
+            except Exception:
+                pass
+        try:
+            self.finish(cause, code)
+        except Exception:
+            pass
+        sys.exit(code)
+
+    def stop_group(self):
+        """Steps 1 to 4. pi is unreaped throughout, so its pid, which is the
+        group id, cannot have been given to another process."""
+        rows = self.look()
+        send(self.pi, signal.SIGTERM, group=True)
+        self.signal(rows, signal.SIGTERM, group_sent=True)
+        end = time.monotonic() + self.grace
+        while not self.group_quiet(rows) and self.pause(end):
+            rows = self.look()
+            self.signal(rows, signal.SIGTERM, fresh=True)
+        self.look()
+        # The last signal the group gets, unless the deadline passes.
+        send(self.pi, signal.SIGKILL, group=True)
+        end = time.monotonic() + 2
+        while not self.reap(self.pi) and self.pause(end, 0.1):
+            pass
+
+    def stop_ledger(self):
+        """Steps 5 to 7: what is left, by pid."""
+        rows = self.look()
+        self.adopt_by_id(rows)
+        self.count(rows)
+        self.signal(rows, signal.SIGTERM)
+        end = time.monotonic() + self.grace
+        while self.live(rows) and self.pause(end):
+            rows = self.look()
+            self.signal(rows, signal.SIGTERM, fresh=True)
+        rows = self.look()
+        self.signal(rows, signal.SIGKILL)
+        end = time.monotonic() + 2
+        while self.live(rows) and self.pause(end):
+            rows = self.look()
+
+    def finish(self, cause, code):
+        """The filter, then step 8: count, unlink, one line, exit."""
+        # The filter ends on its own once pi's pipe closes; give it the time
+        # left to the deadline (0.5 s once that has passed), then kill it.
+        end = max(self.deadline, time.monotonic() + 0.5)
+        while not self.reap(self.flt) and time.monotonic() < end:
+            time.sleep(0.05)
+        if not self.flt_reaped:
+            send(self.flt, signal.SIGKILL)
+            try:
+                os.waitpid(self.flt, 0)
+            except ChildProcessError:
+                pass
+            self.flt_reaped = True
+        alive = 0 if self.reap(self.pi) else 1
+        # One listing, never retried: the deadline may already have passed.
+        rows = list_procs()
+        if rows is None:
+            self.listing_failed = True
+
+        def still(pid, start):
+            if rows is None:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    return False
+                return True
+            row = rows.get(pid)
+            return bool(row and row[START] == start
+                        and not row[STAT].startswith("Z"))
+
+        alive += sum(1 for pid, start in self.counted
+                     if pid != self.pi and still(pid, start))
+        if self.bridge and rows is not None and not still(*self.bridge[:2]):
+            # The adapter's later stop signals whatever pid this file names.
+            try:
+                os.unlink(self.bridge[2])
+            except OSError:
+                pass
+        line = "pi-employee: stopped on %s; %d run processes stopped" % (
+            cause, len(self.counted))
+        if alive:
+            line += "; %d still alive" % alive
+        if self.run_id is None:
+            line += "; no run id"
+        if self.listing_failed:
+            line += "; listing failed"
+        # After a disconnect fd 2 is gone too: neither this write nor the
+        # interpreter's flush at exit may replace the exit code. Non-blocking,
+        # so a full pipe whose reader stopped reading raises instead of
+        # holding the launcher; the flag is on the shared open file, so it is
+        # put back.
+        try:
+            blocking = os.get_blocking(2)
+            os.set_blocking(2, False)
+            try:
+                os.write(2, (line + "\n").encode())
+            finally:
+                os.set_blocking(2, blocking)
+        except OSError:
+            pass
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+        except OSError:
+            pass
+        sys.exit(code)
+
+
+def run_filtered(cmd, env):
+    """Run pi with its stdout piped through pi-stdout-filter (sf#1602), and
+    stop everything the run started on a stop cause (sf#2001)."""
+    filt = os.path.join(os.path.dirname(os.path.abspath(__file__)), FILTER)
+    # An inherited SIG_IGN would let the kernel reap pi and the filter itself.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    r, w = os.pipe()
+    try:
+        flt = subprocess.Popen([filt], stdin=r)
+    except OSError as e:
+        os.close(r)
+        os.close(w)
+        sys.stderr.write("pi-employee: %s did not start (%s); Pi stream "
+                         "unfiltered\n" % (filt, type(e).__name__))
+        return
+    os.close(r)
+    got = []
+
+    def note(sig, _frame):
+        # The first cause wins. Nothing is signalled from here: pi is not in
+        # this launcher's group, and the stop routine is the only path to it.
+        if not got:
+            got.append(sig)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, note)
+    try:
+        # Keep the Popen object: a discarded one can be polled (reaped) by
+        # subprocess's own cleanup, leaving os.kill/os.waitpid a dead pid.
+        # preexec_fn, not process_group: any Python 3, and no threads here.
+        pi = subprocess.Popen(cmd, stdout=w, env=env, preexec_fn=os.setpgrp)
+    finally:
+        os.close(w)
+    run = Run(pi.pid, flt.pid)
+    run.tick_walk()
+    # Mask POLLHUP: an empty mask reports nothing at all on macOS, and
+    # POLLOUT would make a healthy pipe always ready.
+    poller = select.poll()
+    poller.register(1, select.POLLHUP)
+    status = 0
+    while not (run.pi_reaped and run.flt_reaped):
+        cause = None
+        if poller is None:
+            time.sleep(1)
+        else:
+            # A returning signal handler does not cut this wait short.
+            try:
+                events = poller.poll(1000)
+            except OSError:
+                events = [(1, select.POLLNVAL)]
+            for _fd, event in events:
+                if event & (select.POLLHUP | select.POLLERR):
+                    cause = ("disconnect", 1)
+                else:
+                    # /dev/null answers POLLNVAL at once: stop polling fd 1
+                    # for the rest of the run, or this loop would spin.
+                    poller = None
+        if got:
+            cause = (signal.Signals(got[0]).name, 128 + got[0])
+        if cause:
+            # Before any reap, so pi is unreaped when its group is signalled.
+            run.stop(*cause)
+        # Before the reap too: a pi that exited since the last tick is still
+        # an unreaped zombie here, and this walk records its group.
+        run.tick_walk()
+        failed = None
+        pi_was_reaped = run.pi_reaped
+        while True:
+            try:
+                pid, st = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                break
+            code = os.waitstatus_to_exitcode(st)
+            if pid == pi.pid:
+                run.pi_done()
+                status = code
+            elif pid == flt.pid:
+                run.flt_reaped = True
+                # The filter exits 0 at EOF, which pi reaches by closing
+                # stdout or exiting; either way pi's run is intact.
+                if code != 0:
+                    failed = code
+        if failed is not None and not run.pi_reaped:
+            run.stop("%s exited %d" % (FILTER, failed), 1)
+        if run.pi_reaped and not pi_was_reaped:
+            # A normal end: the filter is done within moments of pi, and the
+            # run must not wait a whole tick for it.
+            end = time.monotonic() + 0.5
+            while not run.reap(flt.pid) and time.monotonic() < end:
+                time.sleep(0.05)
+    if status < 0:
+        signal.signal(-status, signal.SIG_DFL)
+        os.kill(os.getpid(), -status)
+    sys.exit(status if status >= 0 else 128 - status)
+
+
+if __name__ == "__main__":
+    main()

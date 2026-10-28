@@ -1,0 +1,11 @@
+{
+	"name": "@rodaddy/ask",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Ask Nagatha webhook intake for the Software Factory board (sf#1235)",
+	"paperclipPlugin": {
+		"manifest": "./manifest.js",
+		"worker": "./worker.js"
+	}
+}

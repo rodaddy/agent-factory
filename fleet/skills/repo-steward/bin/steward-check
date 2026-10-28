@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""steward-check (sf#1185): read-only Forge setup checks for one repo or the fleet.
+
+Usage: steward-check <owner/repo> | --all   [--base-url URL]
+Env:   FORGEJO_TOKEN (sent as a header only), FORGEJO_API_URL (default base).
+Output: JSON {repo, checkedAt, checks:[{id, rule, status, evidence, fix}]};
+        --all prints one JSON line per repo (archived and mirrors skipped).
+Exit:  0 on a completed run regardless of fails; 1 on a harness error.
+Every call is a GET. This script never writes to Forge.
+"""
+import base64
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+STALE_PR_DAYS = 7
+STALE_BRANCH_DAYS = 30
+RAIL_EVENTS = {"create", "pull_request", "pull_request_sync", "push"}
+
+
+class HarnessError(Exception):
+    pass
+
+
+class Forge:
+    def __init__(self, base, token):
+        self.base = base.rstrip("/")
+        self.token = token
+
+    def get(self, path, params=None):
+        """GET -> (status, parsed body or None). 404/403/409 are values, not errors."""
+        url = self.base + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Accept", "application/json")
+        if self.token:
+            req.add_header("Authorization", "token " + self.token)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+                return resp.status, (json.loads(raw) if raw else None)
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404, 409):
+                return e.code, None
+            raise HarnessError("GET %s -> HTTP %d" % (path, e.code)) from None
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise HarnessError("GET %s failed: %s" % (path, type(e).__name__)) from None
+
+
+def parse_time(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def ver_tuple(s):
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", s or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def decode(content_obj):
+    try:
+        raw = (content_obj or {}).get("content") or ""
+        return base64.b64decode(raw).decode("utf-8", "replace")
+    except (ValueError, TypeError, AttributeError):
+        return ""
+
+
+def check(id_, rule, status, evidence, fix):
+    return {"id": id_, "rule": rule, "status": status, "evidence": evidence, "fix": fix}
+
+
+def hygiene(forge, base, repo, out):
+    desc = (repo.get("description") or "").strip()
+    out.append(check("description", "Description set", "pass" if desc else "fail",
+                     "description=%r" % desc[:120], "report"))
+    _, t = forge.get(base + "/topics")
+    topics = (t or {}).get("topics") or []
+    out.append(check("topics", "Topics set", "pass" if topics else "fail",
+                     "topics=%s" % topics, "report"))
+    db = repo.get("default_branch") or ""
+    out.append(check("default-branch", "Default branch is main",
+                     "pass" if db == "main" else "fail", "default_branch=%s" % db, "report"))
+    empty = bool(repo.get("empty"))
+    out.append(check("not-empty", "Repo is not empty", "fail" if empty else "pass",
+                     "empty=%s" % empty, "report"))
+    st, _ = forge.get(base + "/readme")
+    if st != 200:
+        st, _ = forge.get(base + "/contents/README.md")
+    out.append(check("readme", "README exists", "pass" if st == 200 else "fail",
+                     "readme HTTP %d" % st, "report"))
+
+
+def wiki(forge, base, repo, out):
+    has_wiki = bool(repo.get("has_wiki"))
+    out.append(check("wiki-enabled", "Wiki enabled", "pass" if has_wiki else "fail",
+                     "has_wiki=%s" % has_wiki, "report"))
+    if not has_wiki:
+        out.append(check("wiki-home", "Wiki has a Home page", "n/a", "wiki disabled", "self"))
+        out.append(check("wiki-pages", "Wiki has Home, Deploy, Roadmap", "n/a",
+                         "wiki disabled", "self"))
+        return
+    # 404 on wiki/pages means zero pages (no wiki git yet), not an error.
+    st, pages = forge.get(base + "/wiki/pages", {"limit": 50})
+    titles = [p.get("title") for p in (pages or [])] if st == 200 else []
+    out.append(check("wiki-home", "Wiki has a Home page",
+                     "pass" if "Home" in titles else "fail",
+                     "wiki/pages HTTP %d, pages=%s" % (st, titles), "self"))
+    missing = [p for p in ("Home", "Deploy", "Roadmap") if p not in titles]
+    out.append(check("wiki-pages", "Wiki has Home, Deploy, Roadmap",
+                     "fail" if missing else "pass", "missing=%s" % missing, "self"))
+
+
+def tags_and_lag(forge, base, out):
+    st, tags = forge.get(base + "/tags", {"limit": 50})
+    tags = tags if st == 200 and isinstance(tags, list) else []
+    names = [x.get("name", "") for x in tags]
+    out.append(check("tags", "Repo has tags", "pass" if names else "fail",
+                     "tags=%s" % names[:10], "report"))
+    version, vsrc = None, None
+    st, vf = forge.get(base + "/contents/VERSION")
+    if st == 200:
+        version, vsrc = decode(vf).strip(), "VERSION"
+    else:
+        st, pj = forge.get(base + "/contents/package.json")
+        if st == 200:
+            try:
+                version, vsrc = json.loads(decode(pj)).get("version"), "package.json"
+            except (ValueError, AttributeError):
+                version = None
+    vt = ver_tuple(version)
+    tagged = sorted((v, n) for n in names for v in [ver_tuple(n)] if v)
+    rule = "Latest tag matches VERSION"
+    if not vt:
+        out.append(check("tag-lag", rule, "n/a", "no VERSION or package.json version", "report"))
+    elif not tagged:
+        out.append(check("tag-lag", rule, "fail",
+                         "%s=%s but no version tags" % (vsrc, version), "report"))
+    else:
+        latest_v, latest_n = tagged[-1]
+        ok = latest_v == vt
+        out.append(check("tag-lag", rule, "pass" if ok else "fail",
+                         "%s=%s latest tag=%s" % (vsrc, version, latest_n), "report"))
+
+
+def rail(forge, base, out):
+    st, _ = forge.get(base + "/contents/.software-factory.yaml")
+    out.append(check("declaration", ".software-factory.yaml present",
+                     "pass" if st == 200 else "fail", "HTTP %d" % st, "report"))
+    st, wf = forge.get(base + "/contents/.forgejo/workflows")
+    wfs = [x.get("name") for x in wf] if st == 200 and isinstance(wf, list) else []
+    out.append(check("workflows", ".forgejo/workflows present", "pass" if wfs else "fail",
+                     "workflows=%s" % wfs, "report"))
+    st, _ = forge.get(base + "/contents/Dockerfile")
+    root_df = st == 200
+    st, apps = forge.get(base + "/contents/apps")
+    app_dfs = []
+    if st == 200 and isinstance(apps, list):
+        for a in apps:
+            if a.get("type") == "dir":
+                p = "/contents/apps/%s/Dockerfile" % urllib.parse.quote(a.get("name", ""))
+                if forge.get(base + p)[0] == 200:
+                    app_dfs.append(a.get("name"))
+    rule = "Dockerfile at apps/<app>/Dockerfile"
+    if app_dfs:
+        out.append(check("dockerfile", rule, "pass", "apps=%s" % app_dfs, "report"))
+    elif root_df:
+        out.append(check("dockerfile", rule, "fail",
+                         "root Dockerfile only, not the canonical path", "report"))
+    else:
+        out.append(check("dockerfile", rule, "n/a", "no Dockerfile (not a deployable app)",
+                         "report"))
+    st, hooks = forge.get(base + "/hooks")
+    if st != 200:
+        out.append(check("webhook", "Factory webhook present", "n/a",
+                         "hooks HTTP %d (no access)" % st, "report"))
+    else:
+        good = [h.get("id") for h in hooks or []
+                if h.get("active") and RAIL_EVENTS.issubset(set(h.get("events") or []))]
+        out.append(check("webhook", "Factory webhook present", "pass" if good else "fail",
+                         "hooks=%d rail-complete=%s" % (len(hooks or []), good), "report"))
+
+
+def prs_and_branches(forge, base, repo, now, out):
+    st, prs = forge.get(base + "/pulls", {"state": "open", "limit": 50})
+    prs = prs if st == 200 and isinstance(prs, list) else []
+    cut = now - timedelta(days=STALE_PR_DAYS)
+    stale = [p.get("number") for p in prs if (parse_time(p.get("created_at")) or now) < cut]
+    out.append(check("stale-prs", "No open PR older than 7 days", "fail" if stale else "pass",
+                     "stale=%s" % stale, "report"))
+    heads = {(p.get("head") or {}).get("ref") for p in prs}
+    st, br = forge.get(base + "/branches", {"limit": 50})
+    br = br if st == 200 and isinstance(br, list) else []
+    bcut = now - timedelta(days=STALE_BRANCH_DAYS)
+    db = repo.get("default_branch")
+    sb = [b.get("name") for b in br
+          if b.get("name") != db and b.get("name") not in heads
+          and (parse_time((b.get("commit") or {}).get("timestamp")) or now) < bcut]
+    out.append(check("stale-branches", "No branch older than 30 days without a PR",
+                     "fail" if sb else "pass", "stale=%s" % sb, "report"))
+
+
+def check_repo(forge, full):
+    owner, name = full.split("/", 1)
+    base = "/repos/%s/%s" % (urllib.parse.quote(owner), urllib.parse.quote(name))
+    now = datetime.now(timezone.utc)
+    st, repo = forge.get(base)
+    if st != 200 or not isinstance(repo, dict):
+        raise HarnessError("repo %s not readable (HTTP %d)" % (full, st))
+    out = []
+    # One failing Forge call marks its section as error; the other sections still run.
+    sections = (
+        ("hygiene", lambda: hygiene(forge, base, repo, out)),
+        ("wiki", lambda: wiki(forge, base, repo, out)),
+        ("tags", lambda: tags_and_lag(forge, base, out)),
+        ("rail", lambda: rail(forge, base, out)),
+        ("prs", lambda: prs_and_branches(forge, base, repo, now, out)),
+    )
+    for name, run in sections:
+        try:
+            run()
+        except HarnessError as e:
+            out.append(check(name + "-error", "the " + name + " checks could run", "error", str(e), "report"))
+    return {"repo": full, "checkedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "checks": out}
+
+
+def all_repos(forge):
+    seen = []
+    st, orgs = forge.get("/user/orgs", {"limit": 50})
+    if st != 200:
+        raise HarnessError("/user/orgs -> HTTP %d" % st)
+    sources = ["/orgs/%s/repos" % urllib.parse.quote(o.get("username", "")) for o in orgs or []]
+    sources.append("/user/repos")
+    for src in sources:
+        page = 1
+        while True:
+            st, rs = forge.get(src, {"limit": 50, "page": page})
+            if st != 200 or not rs:
+                break
+            for r in rs:
+                if r.get("archived") or r.get("mirror"):
+                    continue
+                if r.get("full_name") and r.get("full_name") not in seen:
+                    seen.append(r.get("full_name"))
+            page += 1
+    return seen
+
+
+def main(argv):
+    args, base, do_all = [], os.environ.get("FORGEJO_API_URL", ""), False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--base-url" and i + 1 < len(argv):
+            base = argv[i + 1]
+            i += 2
+            continue
+        if a == "--all":
+            do_all = True
+        else:
+            args.append(a)
+        i += 1
+    if not base or (not do_all and (len(args) != 1 or "/" not in args[0])):
+        sys.stderr.write("usage: steward-check <owner/repo> | --all [--base-url URL]\n")
+        return 1
+    forge = Forge(base, os.environ.get("FORGEJO_TOKEN", ""))
+    try:
+        if do_all:
+            for full in all_repos(forge):
+                try:
+                    print(json.dumps(check_repo(forge, full)), flush=True)
+                except HarnessError as e:
+                    print(json.dumps({"repo": full, "error": str(e)}), flush=True)
+        else:
+            print(json.dumps(check_repo(forge, args[0]), indent=2))
+    except HarnessError as e:
+        sys.stderr.write("steward-check: %s\n" % e)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

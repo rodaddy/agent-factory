@@ -1,0 +1,34 @@
+{
+	"id": "model-route",
+	"version": 1,
+	"type": "choice",
+	"about": "P3.1a: the difficulty tier a work brief needs; a seat profile maps the tier to a model, never this file",
+	"ask": "The state is a work brief an agent seat is about to start: its `title`, `task` text, and `seat` family. How much model capability does it need to finish correctly?",
+	"confident": 0.7,
+	"criteria": {
+		"light": "Mechanical work, a lookup, a comment, or a single-file change; nothing ambiguous.",
+		"standard": "An ordinary change or review with a contained blast radius.",
+		"deep": "Subtle design, a cross-cutting change, hard debugging, or a security boundary."
+	},
+	"policy": {
+		"light": {
+			"verdict": "LIGHT",
+			"order": 0
+		},
+		"standard": {
+			"verdict": "STANDARD",
+			"order": 1
+		},
+		"deep": {
+			"verdict": "DEEP",
+			"order": 2
+		}
+	},
+	"unsure": {
+		"verdict": "DEFAULT"
+	},
+	"no_signal": {
+		"verdict": "NO_SIGNAL"
+	},
+	"examples": []
+}

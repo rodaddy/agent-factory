@@ -1,0 +1,104 @@
+{
+  "note": "Text guards catch mistakes; the boundary is OS users and credentials (DESIGN D2).",
+  "rules": [
+    {
+      "id": "worktree",
+      "intent": "Worktrees are made and removed through worktrunk (`wt`) only, so `git worktree` in any spelling and the harness worktree tools are refused.",
+      "threatModel": {
+        "defends": "An agent that reaches for `git worktree` (including `git -C <repo> worktree add`, wrappers, eval and command substitutions) out of habit instead of `wt`.",
+        "doesNotDefend": "A process that edits `.git/worktrees` directly, runs git from a script file the line does not show, or otherwise sets out to get past a text match."
+      },
+      "owner": "development",
+      "ruling": "Operator ruling 2026-10-03 (worktrees go through worktrunk only)",
+      "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/worktree.ts" }
+    },
+    {
+      "id": "identity",
+      "intent": "Every agent commit in Development and _tmp carries an `Agent: <harness> · <model> · <seat>` line and no `Claude-Session:` link. On a Paperclip employee box, an employee `git commit` must carry `Agent: paperclip · <model> · <FORGE_LOGIN>` and no `Claude-Session:` link.",
+      "threatModel": {
+        "defends": "A `git commit` whose readable message forgets the Agent line or still carries a session link. On an employee box, an employee commit that would land on Forge with no Agent line naming paperclip and its Forge login.",
+        "doesNotDefend": "Messages the rule cannot read (dynamic `$VAR`, missing files, stdin), commits made outside the harness, or a false Agent line; the commit author is still whatever git config says. On an employee box the seat in the Agent line is not checked against the token that pushes; FORGE_LOGIN and FORGEJO_TOKEN are the boundary."
+      },
+      "owner": "development",
+      "ruling": "Operator ruling on rodaddy/development#848; Rico 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
+      "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/identity.ts", "bash-guard": "fleet/hooks/bash-guard" }
+    },
+    {
+      "id": "cluster",
+      "intent": "kubectl and helm changes run only from the infra seat (rtech-infra, k3s-deploy); reads stay open everywhere. On a Paperclip employee box, bash-guard refuses the kubectl write verbs (apply, create, delete, edit, patch, replace, scale, drain, cordon, uncordon, taint, label, annotate, rollout, set, exec), the helm write verbs (install, upgrade, uninstall, rollback, delete) and the argocd app write verbs (create, delete, set, patch, rollback, terminate-op) for every employee except the infra seat (FLEET_EMPLOYEE=infra, Nagatha), which is allowed as on the Mac, and reports it as `cluster-write`. A kubectl or helm command whose verb is hidden behind an unknown option is refused too (fails closed).",
+      "threatModel": {
+        "defends": "A non-infra session in Development or _tmp running a kubectl or helm verb that changes the cluster, including behind wrappers, eval, or an unknown global option (fails closed). On an employee box, the same verbs run directly or behind the launchers and `sh -c` bash-guard follows, and behind an unknown option before the verb (fails closed).",
+        "doesNotDefend": "Cluster changes through the API with curl, another client, a script file, or a kubeconfig used outside the harness; the boundary is the cluster credentials. On an employee box, the infra seat's writes are allowed by design; the corpus rows run as a non-infra employee (`reviewer`), so the infra allowance is pinned by bash-guard's own tests, not by a row."
+      },
+      "owner": "development",
+      "ruling": "Operator ruling 2026-10-03 (#845/#860); Rico 2026-10-06 (sf#1642: Paperclip employees match the local rules); Rico 2026-10-06 (sf#1643: allow the infra seat, fail closed on an unknown option)",
+      "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/cluster.ts", "bash-guard": "fleet/hooks/bash-guard" }
+    },
+    {
+      "id": "model-gate",
+      "intent": "`claude -p` (print mode, also via claudex) is never run from Development or _tmp, and Fable runs only when Rico selects it. On a Paperclip employee box, `claude -p` / `claudex ... -p` from an employee run is refused; the Fable clause stays Mac-only.",
+      "threatModel": {
+        "defends": "A session launching a headless `claude -p`/`claudex ... -p` worker, or pinning a Fable model in a Workflow or Agent call, by its own choice. On an employee box, an employee spawning its own nested headless Claude run instead of working in its own seat.",
+        "doesNotDefend": "A print-mode run started from a script file, an alias, or another process the Bash line does not show, or a model chosen outside the `model:` spellings the rule reads. On an employee box, the Paperclip runtime's own `claude` launch of the employee is outside the employee's Bash and is not checked."
+      },
+      "owner": "development",
+      "ruling": "Operator rulings 2026-10-05 (no claude -p; Fable only when Rico selects it); Rico 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
+      "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/model-gate.ts", "bash-guard": "fleet/hooks/bash-guard" }
+    },
+    {
+      "id": "no-tmp",
+      "intent": "Never /tmp: in Development and _tmp, a Bash line or file tool that writes under /tmp, /private/tmp or /private/var/folders, runs mktemp without a non-tmp folder, cds into /tmp, or points TMPDIR at /tmp is refused; reads stay open. On a Paperclip employee box, bash-guard refuses the same writes under /tmp, /private/tmp and /private/var/folders: output redirects, tee, cp/mv/install/ln destinations (also -t/--target-directory), mktemp without a non-tmp -p/--tmpdir= folder or template (and any -t or bare --tmpdir), cd/pushd into them, TMPDIR= in an assignment, env or export/declare/typeset/local/readonly, and Write/Edit/MultiEdit/NotebookEdit paths.",
+      "threatModel": {
+        "defends": "An agent reaching for /tmp by reflex: redirects, tee/cp/mv/install destinations, Write/Edit/NotebookEdit paths, links that land under /tmp, bare mktemp, cd/pushd into /tmp, and TMPDIR=/tmp in an assignment, env, export or declare. On an employee box, the same writes also behind the launchers and `sh -c` bash-guard follows, a leading $TMPDIR read as the box's TMPDIR or /tmp, and paths whose links resolve under /tmp.",
+        "doesNotDefend": "A write the line does not show (a script file, a tool that picks /tmp itself, an interpreter one-liner), a cd or TMPDIR value spelled with a variable, or anything run outside the harness; the boundary is the OS user and its sandbox. On an employee box, a path with any other variable is judged only by its literal text before the variable (known holes in sf#1492)."
+      },
+      "owner": "development",
+      "ruling": "Operator rulings 2026-09-21 and 2026-10-05 (never /tmp, forced in dev-rules and bash-guard through one table); Rico 2026-10-06 (sf#1642: Paperclip employees match the local rules)",
+      "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/no-tmp.ts", "bash-guard": "fleet/hooks/bash-guard" }
+    },
+    {
+      "id": "ansible-apply",
+      "intent": "On a fleet box only Nagatha (FLEET_EMPLOYEE=infra) applies ansible: every other employee runs ansible and ansible-playbook in check mode only (--check, -C, --syntax-check, --list-*, --version, --help), never over a local connection or a local, directory or unreadable inventory, and never runs ansible-pull or ansible-console.",
+      "threatModel": {
+        "defends": "A reviewer applying a playbook it is reviewing, against the box it runs on or anywhere else: a plain apply, `-c local` or `ansible_connection=local` in `-e`, an inventory that sets a local connection (also after a `cd` in the same line, attached or clustered `-i`), and the same behind sudo/env wrappers, timeout/nice/ionice/stdbuf/setsid/xargs/uv run/uvx launchers and `sh`/`bash`/`zsh`/`dash -c`.",
+        "doesNotDefend": "A task with `check_mode: false`, which runs for real even under --check; ansible started from a script file, a Makefile or an interpreter the line does not show; an inventory changed between the check and the run; or anything outside the harness. The boundary is the OS user and its credentials."
+      },
+      "owner": "software-factory",
+      "ruling": "sf#1427 (a reviewer applied a local inventory, Paperclip down 4h52m, 2026-10-05) and sf#1437",
+      "matchers": { "bash-guard": "fleet/hooks/bash-guard" }
+    },
+    {
+      "id": "guard-files",
+      "intent": "No employee command or file tool names the guard itself: the Claude settings.json and settings.local.json, fleet/hooks/bash-guard and ~/fleet/hooks/, the Pi fleet-guard extension and ~/.pi/agent/extensions/, the Codex hooks.json and config.toml are refused for read and write alike.",
+      "threatModel": {
+        "defends": "An agent editing, removing or reading the hook and settings files that hold its own floor, in any spelling the guard normalizes: `~` and `$HOME`, doubled slashes and `./`, `..` segments, a relative name after a `cd` in the same line, a redirect glued to its target, and Write/Edit/MultiEdit/NotebookEdit paths.",
+        "doesNotDefend": "A path built at run time (a variable, a glob, a script file, an interpreter one-liner), a symlink to a guard file under another name, or a change made outside the harness. The boundary is that the guard files belong to an OS user the agent is not."
+      },
+      "owner": "software-factory",
+      "ruling": "sf#1221 (the fleet box safety floor), sf#1230 (Pi and Codex adapters), sf#1262 (the home of the user the guard runs as), sf#1427 (PR #1432: a name after a cd)",
+      "matchers": { "bash-guard": "fleet/hooks/bash-guard" }
+    },
+    {
+      "id": "destructive-sql",
+      "intent": "A command that runs a psql-family client (psql, pg_dump, pg_dumpall, pg_restore, pgcli), also behind a launcher, is refused when its line contains DROP, TRUNCATE or DELETE FROM; read-only SQL stays open. The guard reports it as `db-drop`.",
+      "threatModel": {
+        "defends": "An agent dropping, truncating or bulk-deleting a table by habit from an inline `psql -c` or `pgcli -e`, directly or behind timeout, nice, uv run and the other launchers.",
+        "doesNotDefend": "SQL the line does not show (`psql -f file`, stdin from a file, a migration tool, an ORM, another client), DELETE without FROM, ALTER or UPDATE. The match is case-insensitive over the whole line, so DROP text elsewhere in a psql line refuses too. The boundary is the database role."
+      },
+      "owner": "software-factory",
+      "ruling": "sf#1221 (the fleet box safety floor), sf#1427 (PR #1432: SQL behind launchers)",
+      "matchers": { "bash-guard": "fleet/hooks/bash-guard" }
+    },
+    {
+      "id": "forge-api",
+      "intent": "In Development and _tmp, a raw curl or wget to the Forge API (forge.example.internal/api/ or 10.0.20.58:3000/api/) is refused, and the refusal names the _ob/bin/forge verb that does the same call. On a Paperclip employee box, bash-guard refuses the same calls from an employee run, and the sanctioned client is `/usr/bin/node ~/fleet/forge/forge`.",
+      "threatModel": {
+        "defends": "A session hand-writing curl against the Forge API, posting as the wrong identity or re-learning endpoints: any method, -X/--request, --url=, a quoted URL, the raw IP origin, wget, and the same behind sh/bash -c. On an employee box, the same calls from an employee, who would otherwise bypass the forge client's signature and PR-body set.",
+        "doesNotDefend": "A URL built from a $VAR, a curl -K config holding the URL, scripts the Bash line does not show, or other HTTP clients. The boundary is the harness account's token scopes; on an employee box, the employee's FORGEJO_TOKEN scopes."
+      },
+      "owner": "development",
+      "ruling": "Rico ask 2026-10-05 (rodaddy/development#979); Rico 2026-10-06 (sf#1642/sf#1482: Paperclip employees match the local rules)",
+      "matchers": { "dev-rules": "_ob/mods/dev-rules/hooks/rules/forge-api.ts", "bash-guard": "fleet/hooks/bash-guard" }
+    }
+  ]
+}

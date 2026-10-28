@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""spawn-helper: run one bounded child Pi session inside the caller's own run.
+
+Usage: spawn-helper --model <fleet-proxy/id> --thinking <level>
+                    --access <read-only|write> --brief <file> --scope <dir>
+                    --out <dir> [--prompt <text>] [--timeout <s>]
+
+The Linux/box port of the Mac pi-lane tool (behaviour, not platform; no
+arbiter). The child runs in --scope as
+  pi -p --mode json --no-session --no-context-files -ne
+     -e <root>/pi-extensions/fleet-proxy-models/index.ts
+     -e <root>/pi-extensions/fleet-guard/index.ts
+     --model <model>:<thinking> --tools <list>
+     --append-system-prompt <brief text> <prompt>
+Extensions are off (-ne) and exactly two are loaded: fleet-proxy-models
+registers the `fleet-proxy` provider, and fleet-guard keeps the fleet bash
+guard on the child's tools. Fleet root: env SPAWN_HELPER_FLEET_ROOT, else
+three directories above this script (~/fleet on a box, fleet/ in the repo).
+
+Tools: read-only -> read,grep,find,ls; write -> read,grep,find,ls,edit,write,bash.
+Timeout: default 600 s, values above 900 are capped at 900. On timeout the
+child's process group gets TERM, then KILL after up to 5 s.
+
+Writes <out>/events.jsonl (child stdout), <out>/stderr.txt and
+<out>/RESULTS.md (exit:, duration_s:, stop_reason:, tool_calls:, error:, then
+the child's final assistant text).
+
+pi: env PI_BIN, else `pi` on PATH.
+
+Exit: 0 the child finished cleanly; 1 the child failed (error stop, timeout,
+nonzero exit or empty final text); 3 harness error (bad args, missing brief,
+scope, extension or pi), usage on stderr.
+"""
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+THINKING = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+TOOLS = {
+    "read-only": "read,grep,find,ls",
+    "write": "read,grep,find,ls,edit,write,bash",
+}
+EXTENSIONS = ("fleet-proxy-models", "fleet-guard")
+DEFAULT_TIMEOUT = 600
+MAX_TIMEOUT = 900
+KILL_GRACE = 5
+DEFAULT_PROMPT = "Do the task in your brief. End with your findings as plain text."
+USAGE = __doc__.split("\n\n")[1]
+FAILED_STOPS = ("error", "aborted")
+
+
+def harness(msg):
+    sys.stderr.write("spawn-helper: %s\n%s\n" % (msg, USAGE))
+    sys.exit(3)
+
+
+def parse(argv):
+    flags = {"--model", "--thinking", "--access", "--brief", "--scope", "--out",
+             "--prompt", "--timeout"}
+    opts = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a not in flags or i + 1 >= len(argv):
+            harness("bad argument: %s" % a)
+        opts[a[2:]] = argv[i + 1]
+        i += 2
+    for need in ("model", "thinking", "access", "brief", "scope", "out"):
+        if not opts.get(need):
+            harness("--%s is required" % need)
+    if opts["thinking"] not in THINKING:
+        harness("--thinking must be one of %s" % "|".join(THINKING))
+    if opts["access"] not in TOOLS:
+        harness("--access must be read-only or write")
+    if not os.path.isfile(opts["brief"]):
+        harness("brief not found: %s" % opts["brief"])
+    if not os.path.isdir(opts["scope"]):
+        harness("scope is not a directory: %s" % opts["scope"])
+    try:
+        timeout = int(opts.get("timeout", DEFAULT_TIMEOUT))
+    except ValueError:
+        harness("--timeout must be a whole number of seconds")
+    if timeout < 1:
+        harness("--timeout must be at least 1")
+    opts["timeout"] = min(timeout, MAX_TIMEOUT)
+    return opts
+
+
+def fleet_root():
+    env = os.environ.get("SPAWN_HELPER_FLEET_ROOT", "").strip()
+    if env:
+        return env
+    here = os.path.dirname(os.path.realpath(__file__))
+    return os.path.dirname(os.path.dirname(os.path.dirname(here)))
+
+
+def parse_events(path):
+    """Last assistant message_end text, stop reason and error; tool start count."""
+    text, stop, err, tools = "", "none", "none", 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(o, dict):
+            continue
+        if o.get("type") == "tool_execution_start":
+            tools += 1
+        msg = o.get("message")
+        if o.get("type") == "message_end" and isinstance(msg, dict) \
+                and msg.get("role") == "assistant":
+            content = msg.get("content") if isinstance(msg.get("content"), list) else []
+            text = "\n".join(c.get("text") or "" for c in content
+                             if isinstance(c, dict) and c.get("type") == "text")
+            s = msg.get("stopReason") or o.get("stopReason")
+            stop = str(s) if s else "none"
+            e = msg.get("errorMessage") or o.get("errorMessage")
+            err = str(e) if e else "none"
+    return text, stop, err, tools
+
+
+def kill_group(proc, sig):
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def stop_group(proc):
+    """TERM the child's group, KILL it after KILL_GRACE, and reap the child."""
+    kill_group(proc, signal.SIGTERM)
+    try:
+        return proc.wait(timeout=KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        kill_group(proc, signal.SIGKILL)
+        return proc.wait()
+
+
+class Stopped(Exception):
+    """The helper itself got TERM, INT or HUP (its parent run was cancelled)."""
+
+
+def on_signal(signum, _frame):
+    raise Stopped(signum)
+
+
+def die_with_parent():
+    """Linux only: the child gets KILL if the helper dies, even by KILL."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+
+
+def main(argv):
+    opts = parse(argv)
+    pi = os.environ.get("PI_BIN", "").strip() or shutil.which("pi")
+    if not pi or not (os.path.isfile(pi) and os.access(pi, os.X_OK)):
+        harness("pi not found (set PI_BIN or put pi on PATH)")
+    # The child runs in --scope, so every path it is handed is absolute.
+    pi = os.path.abspath(pi)
+    root = os.path.abspath(fleet_root())
+    ext_args = []
+    for name in EXTENSIONS:
+        path = os.path.join(root, "pi-extensions", name, "index.ts")
+        if not os.path.isfile(path):
+            harness("extension not found: %s" % path)
+        ext_args += ["-e", path]
+    try:
+        with open(opts["brief"], encoding="utf-8") as f:
+            brief = f.read()
+    except OSError as e:
+        harness("brief unreadable: %s" % type(e).__name__)
+    out = os.path.abspath(opts["out"])
+    try:
+        os.makedirs(out, exist_ok=True)
+    except OSError:
+        harness("cannot create out dir: %s" % out)
+
+    cmd = [pi, "-p", "--mode", "json", "--no-session", "--no-context-files", "-ne",
+           *ext_args, "--model", "%s:%s" % (opts["model"], opts["thinking"]),
+           "--tools", TOOLS[opts["access"]], "--append-system-prompt", brief,
+           opts.get("prompt") or DEFAULT_PROMPT]
+    events = os.path.join(out, "events.jsonl")
+    start = time.monotonic()
+    timed_out = False
+    with open(events, "wb") as ev, open(os.path.join(out, "stderr.txt"), "wb") as er:
+        try:
+            proc = subprocess.Popen(cmd, cwd=opts["scope"], stdin=subprocess.DEVNULL,
+                                    stdout=ev, stderr=er, start_new_session=True,
+                                    preexec_fn=die_with_parent)
+        except OSError as e:
+            harness("cannot start pi: %s" % type(e).__name__)
+        # The child is in its own session, so a cancel aimed at the caller's run
+        # never reaches it; the helper stops it on the way out.
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, on_signal)
+        try:
+            try:
+                rc = proc.wait(timeout=opts["timeout"])
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                rc = stop_group(proc)
+        except Stopped as e:
+            for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                signal.signal(sig, signal.SIG_IGN)
+            stop_group(proc)
+            return 128 + e.args[0]
+        finally:
+            # A grandchild left in the group after pi exits is never the parent's to keep.
+            kill_group(proc, signal.SIGKILL)
+    duration = int(time.monotonic() - start)
+
+    text, stop, err, tools = parse_events(events)
+    if timed_out:
+        err = "timeout after %ds" % opts["timeout"]
+    elif stop in FAILED_STOPS and err == "none":
+        err = "stop reason %s" % stop
+    elif rc != 0 and err == "none":
+        err = "pi exited %d" % rc
+    elif not text.strip() and err == "none":
+        err = "empty final text"
+    code = 0 if err == "none" else 1
+
+    with open(os.path.join(out, "RESULTS.md"), "w", encoding="utf-8") as f:
+        f.write("exit: %d\nduration_s: %d\nstop_reason: %s\ntool_calls: %d\nerror: %s\n\n%s\n"
+                % (code, duration, stop, tools, " ".join(err.split()), text))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,57 @@
+{
+	"_doc": "Two fixture sets the test expands into the CANARY_FIXTURES layout. A head is a short name the test hashes to 40 hex. A comment is `r:<head>` (a factory/pr-review round on that head, posted by factory), `hold` (a ROUND LIMIT notice, posted by sf-reed) or `note` (any other comment). `status` maps a head to its factory/pr-review state. `open` is the repo record's open_pr_counter. The bad set breaks every gate; its recreate-reopen replacement gets a round after the inherited hold, its concurrent-events PR's only round is on a stale head, and its same-head-no-progress PR has two rounds on two heads.",
+	"good": {
+		"host": {
+			"fleet": "canary",
+			"fleet-pi": "canary",
+			"admission": "enforce",
+			"agents": [["Desai", "idle"], ["Reed", "paused"], ["Kong", "terminated"]]
+		},
+		"open": 3,
+		"status": { "s1a": "success", "s2a": "failure", "s2b": "success" },
+		"prs": {
+			"1": { "head": "s1a", "comments": ["note", "r:s1a"] },
+			"2": { "head": "s2b", "comments": ["r:s2a", "note", "r:s2b"] },
+			"3": { "head": "s3c", "comments": ["r:s3a", "r:s3b", "hold", "r:s3c"] },
+			"4": { "head": "s4b", "labels": ["round-limit"], "comments": ["r:s4a", "r:s4b", "hold"] },
+			"5": {
+				"head": "s5b",
+				"labels": ["round-limit"],
+				"comments": ["r:s5a", "r:s5b", "hold", "note"]
+			},
+			"6": { "head": "s6a", "comments": ["r:s6a", "note"] },
+			"7": { "head": "s7b", "comments": ["r:s7a", "r:s7b"] },
+			"8": { "head": "s8a", "comments": ["hold"] },
+			"9": { "head": "s9b", "comments": ["r:s9a", "hold", "r:s9b"] }
+		}
+	},
+	"bad": {
+		"host": {
+			"fleet": "older",
+			"fleet-pi": "older",
+			"admission": "off",
+			"agents": [["Desai", "paused"], ["Reed", "idle"]]
+		},
+		"open": 3,
+		"status": { "s1b": "success", "s2a": "success", "s2b": "success" },
+		"prs": {
+			"1": { "head": "s1b", "comments": ["r:s1a", "r:s1b"] },
+			"2": { "head": "s2b", "comments": ["r:s2a", "r:s2b"] },
+			"3": { "head": "s3d", "comments": ["r:s3a", "r:s3b", "hold", "r:s3c", "r:s3d"] },
+			"4": {
+				"head": "s4c",
+				"labels": ["round-limit"],
+				"comments": ["r:s4a", "r:s4b", "hold", "r:s4c"]
+			},
+			"5": {
+				"head": "s5c",
+				"labels": ["round-limit"],
+				"comments": ["r:s5a", "r:s5b", "r:s5c", "hold"]
+			},
+			"6": { "head": "s6b", "comments": ["r:s6a", "r:s6b"] },
+			"7": { "head": "s7b", "comments": ["r:s7a", "r:s7b"] },
+			"8": { "head": "s8a", "comments": ["hold", "r:s8a"] },
+			"9": { "head": "s9b", "comments": ["r:s9a"] }
+		}
+	}
+}

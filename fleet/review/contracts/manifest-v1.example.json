@@ -1,0 +1,42 @@
+{
+	"schemaVersion": 1,
+	"repo": "rodaddy/example",
+	"pr": 1,
+	"baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	"headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	"files": [
+		{
+			"path": "base/README.md",
+			"bytes": 6,
+			"sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+			"kind": "regular",
+			"repoPath": "README.md",
+			"side": "base",
+			"gitMode": "100644",
+			"objectOid": "ce013625030ba8dba906f756967f9e9ca394464a"
+		},
+		{
+			"path": "context.json",
+			"bytes": 3,
+			"sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+			"kind": "artifact"
+		},
+		{
+			"path": "diff.patch",
+			"bytes": 0,
+			"sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"kind": "artifact"
+		},
+		{
+			"path": "head/README.md",
+			"bytes": 6,
+			"sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+			"kind": "regular",
+			"repoPath": "README.md",
+			"side": "head",
+			"gitMode": "100644",
+			"objectOid": "ce013625030ba8dba906f756967f9e9ca394464a"
+		}
+	],
+	"gitlinks": []
+}

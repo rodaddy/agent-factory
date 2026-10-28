@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""wiki-put <owner/repo> <page-title> <markdown-file>
+
+Create or update one Forgejo wiki page (sf#1155, sf#1187). Find the page by its
+exact title in the wiki page listing; PATCH it at the listing's sub_url if it
+exists, else POST /wiki/new. A page's sub_url can differ from its title (Forge
+lists rtech/crm "How-to" at "How-to.-" and GET /page/How-to is 404), so the
+title is never used as the page URL (SOF-10175). A wiki that was never written
+has no .wiki.git, so Forge answers the listing with 404; when the repo itself
+says has_wiki, that is an empty wiki and POST /wiki/new creates it (SOF-10638).
+Content goes as content_base64
+with a commit message. The token is read from FORGEJO_TOKEN and sent only in the
+Authorization header; it is never printed.
+
+Exit: 0 written, 1 Forge refused the write, 3 usage/environment/harness error.
+"""
+import base64
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+def die(code, msg):
+    print(f"wiki-put: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+LIST_LIMIT = 50  # Forgejo's default MAX_RESPONSE_ITEMS
+LIST_MAX_PAGES = 200
+
+
+def call(method, url, token, payload=None, want_body=False):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"token {token}")
+    req.add_header("Accept", "application/json")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read() if want_body else b""
+            return (resp.status, body) if want_body else resp.status
+    except urllib.error.HTTPError as err:
+        return (err.code, b"") if want_body else err.code
+
+
+def wiki_enabled(repo_url, token):
+    """True when the repo is readable and reports has_wiki."""
+    status, body = call("GET", repo_url, token, want_body=True)
+    if status != 200:
+        return False
+    try:
+        info = json.loads(body or b"{}")
+    except ValueError:
+        return False
+    return isinstance(info, dict) and info.get("has_wiki") is True
+
+
+def find_sub_url(base, title, token):
+    """The sub_url of the page whose title is exactly `title`, or None."""
+    for page in range(1, LIST_MAX_PAGES + 1):
+        query = urllib.parse.urlencode({"page": page, "limit": LIST_LIMIT})
+        status, body = call("GET", f"{base}/pages?{query}", token, want_body=True)
+        if status == 404 and page == 1 and wiki_enabled(base.rsplit("/wiki", 1)[0], token):
+            return None  # wiki on but never written: no pages yet (SOF-10638)
+        if status != 200:
+            die(1, f"GET page listing returned HTTP {status} (wiki disabled or no access?)")
+        try:
+            entries = json.loads(body or b"[]")
+        except ValueError:
+            die(1, "page listing is not JSON")
+        if not isinstance(entries, list):
+            die(1, "page listing is not a list")
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("title") == title:
+                sub_url = entry.get("sub_url")
+                if not isinstance(sub_url, str) or not sub_url:
+                    die(1, f"page {title!r} is listed without a sub_url")
+                return sub_url
+        if not entries:
+            return None
+    die(1, f"page listing did not end within {LIST_MAX_PAGES} pages")
+
+
+def main():
+    if len(sys.argv) != 4:
+        die(3, "usage: wiki-put <owner/repo> <page-title> <markdown-file>")
+    repo, title, path = sys.argv[1:]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        die(3, f"bad repo: {repo!r}")
+    if not title.strip():
+        die(3, "empty page title")
+    api = os.environ.get("FORGEJO_API_URL", "").rstrip("/")
+    token = os.environ.get("FORGEJO_TOKEN", "")
+    if not api or not token:
+        die(3, "FORGEJO_API_URL and FORGEJO_TOKEN must be set")
+    try:
+        with open(path, "rb") as fh:
+            content = fh.read()
+    except OSError as err:
+        die(3, f"cannot read {path}: {err.strerror}")
+
+    base = f"{api}/repos/{repo}/wiki"
+    payload = {
+        "title": title,
+        "content_base64": base64.b64encode(content).decode(),
+        "message": f"wiki-put: update {title}",
+    }
+    try:
+        sub_url = find_sub_url(base, title, token)
+        if sub_url is not None:
+            # sub_url is already path-escaped by Forge; escape anything else.
+            method, url = "PATCH", f"{base}/page/{urllib.parse.quote(sub_url, safe='%')}"
+        else:
+            method, url = "POST", f"{base}/new"
+            payload["message"] = f"wiki-put: create {title}"
+        status = call(method, url, token, payload)
+    except (urllib.error.URLError, OSError) as err:
+        die(3, f"cannot reach Forge: {getattr(err, 'reason', err)}")
+    if status not in (200, 201):
+        die(1, f"{method} returned HTTP {status}")
+    print(f"wiki-put: {method} {repo} wiki page {title!r} ok")
+
+
+if __name__ == "__main__":
+    main()

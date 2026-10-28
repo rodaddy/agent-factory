@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""check-profiles: validate every Pi seat profile (sf#1493 Phase 1 US-001, P1.1a).
+
+Usage: check-profiles [--root <fleet root, default: this script's parent dir>]
+                      [--agents <agents.json, default: <root>/board/agents.json>]
+
+Hand-checks <root>/pi/profiles/*.json against fleet/pi/profile.schema.json and
+prints `PASS <seat>` or `FAIL <seat>: <reason>`, then `profiles: <n> checked`.
+No `schemaVersion` = v0 (P0.3 launcher shape: tools, extensions with fleet-guard
+first, agentDir). v1 adds required fields, employee == file name == agents.json
+key, roleTools within tools, caps.maxWallSec <= timeoutSec, the optional router
+block (phase-3.md P3.2) and the family ceiling pi/families/<F>.json.
+Exit: 0 all pass; 1 any failure; 3 agents.json unreadable or empty, or zero
+profiles found (exit 0 having examined nothing is not a pass).
+"""
+import argparse, json, os, re, sys  # noqa: E401 (stdlib only, no new dependency)
+
+TOOL_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+SEAT_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+GUARD = "pi-extensions/fleet-guard/index.ts"
+LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
+CAP_KEYS = ("maxTurns", "maxWallSec", "maxSpendUsd")
+V1_REQUIRED = ("employee", "family", "tools", "extensions", "agentDir", "models", "thinking", "writeRoots", "caps")
+
+
+class Bad(Exception):
+    pass
+
+
+def load(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def strs(data, key, pattern=None):
+    v = data.get(key, []) if isinstance(data, dict) else None
+    if not isinstance(v, list) or not all(isinstance(x, str) and x for x in v):
+        raise Bad("%s must be a list of strings" % key)
+    bad = [x for x in v if pattern and not pattern.match(x)]
+    if bad:
+        raise Bad("%s: bad name %r" % (key, bad[0]))
+    return v
+
+
+def str_(v):
+    return isinstance(v, str) and v != ""
+
+
+def num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def check_base(root, data):
+    if not strs(data, "tools", TOOL_RE):
+        raise Bad("tools must be a non-empty list")
+    exts = strs(data, "extensions")
+    if not exts or exts[0] != GUARD:
+        raise Bad("extensions[0] must be fleet-guard (%s)" % GUARD)
+    for e in exts:
+        if not os.path.isfile(os.path.join(root, e)):
+            raise Bad("extension missing: %s" % e)
+    if "agentDir" in data and not str_(data["agentDir"]):
+        raise Bad("agentDir must be a non-empty string")
+    if "models" in data:
+        if not isinstance(data["models"], dict) or "families" not in data["models"]:
+            raise Bad("models.families is required")
+        strs(data["models"], "families")
+
+
+def check_router(r):
+    if not isinstance(r, dict) or r.get("mode") not in ("advisory", "live") or not str_(r.get("provider")):
+        raise Bad("router needs mode advisory|live and a provider")
+    tiers = r.get("tiers", {})
+    if not isinstance(tiers, dict) or set(tiers) - {"light", "standard", "deep"}:
+        raise Bad("router.tiers: keys must be light, standard or deep")
+    for k, v in [("default", r.get("default"))] + list(tiers.items()):
+        if not isinstance(v, dict) or not isinstance(v.get("model"), str) or v.get("thinking") not in LEVELS:
+            raise Bad("router.%s must be {model, thinking}" % k)
+    d = r.get("deadlineMs", 6000)
+    if not isinstance(d, int) or isinstance(d, bool) or not 100 <= d <= 30000:
+        raise Bad("router.deadlineMs must be an integer 100..30000")
+
+
+def caps_of(data):
+    caps = data.get("caps")
+    if not isinstance(caps, dict) or not all(num(caps.get(k)) and caps[k] > 0 for k in CAP_KEYS):
+        raise Bad("caps must hold %s, each a number > 0" % ", ".join(CAP_KEYS))
+    return caps
+
+
+def sets_of(data):
+    out = {k: set(strs(data, k)) for k in ("tools", "roleTools", "skillBins", "writeRoots")}
+    out["models.families"] = set(strs(data.get("models") or {}, "families"))
+    out["thinking.allowed"] = set(strs(data.get("thinking") or {}, "allowed"))
+    return out
+
+
+def check_v1(root, seat, data, agents):
+    missing = [k for k in V1_REQUIRED if k not in data]
+    if missing:
+        raise Bad("missing required field %s" % missing[0])
+    if data["employee"] != seat:
+        raise Bad("employee %r must equal the file name %r" % (data["employee"], seat))
+    if seat not in agents:
+        raise Bad("employee %r is not an agents.json key" % seat)
+    if data["family"] not in tuple("ABCDEFG"):
+        raise Bad("family must be one of A-G")
+    for k in ("writeRoots", "readRoots"):
+        for p in strs(data, k):
+            if not p.startswith(("~/", "/")) or ".." in p.split("/"):
+                raise Bad("%s: %r must be ~/ or absolute, without .." % (k, p))
+    th = data["thinking"]
+    if not set(strs(th, "allowed")) <= set(LEVELS) or th.get("default") not in th["allowed"]:
+        raise Bad("thinking: allowed must be levels and default one of them")
+    caps, mine = caps_of(data), sets_of(data)
+    extra = mine["roleTools"] - mine["tools"]
+    if extra:
+        raise Bad("roleTools not in tools: %s" % ",".join(sorted(extra)))
+    if "router" in data:
+        check_router(data["router"])
+    jev = data.get("jev", {})
+    budget = jev.get("decideBudget", 0) if isinstance(jev, dict) else None
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 0:
+        raise Bad("jev.decideBudget must be an integer >= 0 (jev an object)")
+    row = agents.get(seat)
+    if row is not None and not isinstance(row, dict):
+        raise Bad("agents.json entry for %r must be an object" % seat)
+    timeout = (row or {}).get("timeoutSec")
+    if num(timeout) and caps["maxWallSec"] > timeout:
+        raise Bad("caps.maxWallSec %s exceeds agents.json timeoutSec %s" % (caps["maxWallSec"], timeout))
+    try:
+        fam = load(os.path.join(root, "pi", "families", data["family"] + ".json"))
+    except (OSError, ValueError) as e:
+        raise Bad("family %s unreadable: %s" % (data["family"], e))
+    ceiling = sets_of(fam)
+    for k, have in mine.items():
+        over = have - ceiling[k]
+        if over:
+            raise Bad("%s outside family %s ceiling: %s" % (k, data["family"], ",".join(sorted(over))))
+    fcaps = caps_of(fam)
+    for k in CAP_KEYS:
+        if caps[k] > fcaps[k]:
+            raise Bad("caps.%s %s above family %s cap %s" % (k, caps[k], data["family"], fcaps[k]))
+
+
+def check_one(root, seat, path, agents):
+    if not SEAT_RE.match(seat):
+        raise Bad("file name is not a seat name")
+    try:
+        data = load(path)
+    except (OSError, ValueError) as e:
+        raise Bad("unreadable: %s" % e)
+    if not isinstance(data, dict):
+        raise Bad("profile must be an object")
+    check_base(root, data)
+    if "schemaVersion" not in data:
+        return " (v0)"
+    if data["schemaVersion"] != 1:
+        raise Bad("schemaVersion must be 1")
+    check_v1(root, seat, data, agents)
+    return ""
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="check-profiles")
+    ap.add_argument("--root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    ap.add_argument("--agents")
+    a = ap.parse_args(argv)
+    agents_path = a.agents or os.path.join(a.root, "board", "agents.json")
+    try:
+        agents = load(agents_path)
+    except (OSError, ValueError) as e:
+        agents = "unreadable (%s)" % e
+    if not isinstance(agents, dict) or not agents:
+        sys.stderr.write("check-profiles: agents.json %s: %s\n" % (agents_path, agents or "names zero employees"))
+        return 3
+    pdir = os.path.join(a.root, "pi", "profiles")
+    names = sorted(f[:-5] for f in os.listdir(pdir) if f.endswith(".json")) if os.path.isdir(pdir) else []
+    if not names:
+        sys.stderr.write("check-profiles: no profiles found under %s\n" % pdir)
+        return 3
+    failed = 0
+    for seat in names:
+        try:
+            print("PASS %s%s" % (seat, check_one(a.root, seat, os.path.join(pdir, seat + ".json"), agents)))
+        except Bad as e:
+            failed += 1
+            print("FAIL %s: %s" % (seat, e))
+    print("profiles: %d checked" % len(names))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

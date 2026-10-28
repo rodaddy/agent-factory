@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# post-verdict -- render a review verdict from JSON and post it.
+#
+# Usage: post-verdict [--dry-run] <verdict.json | ->
+#
+# The JSON (stdin with `-`) names the shape and its facts; the script writes
+# the body in the exact shape review-pr (kind "review"; "lead" is refused for
+# now) defines, so no model hand-builds the text merge-check parses:
+#   kind, repo "owner/repo", pr <int>, sha <40 lowercase hex>, verdict
+#   approve|fix-first, findings [{severity P0|P1|P2, title, at "path:line",
+#   evidence, fix}], suggestions [text], checks text, ran {command, exit}
+#   (absent: "nothing"), blast_radius "confirmed"|"wrong: <why>", board_issue (optional: the board copy, posted first).
+# Optional: escalate (reason), round (positive integer, default 1).
+# Every text is one line: a newline could forge a `verdict:` line. A P0 or P1
+# finding requires fix-first. forge-post beside this script posts to Forge
+# and adds the identity line.
+#
+# Exit: 0 posted (Forge URL on stdout) or rendered (--dry-run, body on stdout) |
+#       1 body over the cap or a post failed | 2 bad input | 3 missing environment.
+set -euo pipefail
+
+usage() {
+	echo "usage: post-verdict [--dry-run] <verdict.json | ->" >&2
+	exit 2
+}
+
+dry=0
+if [ "${1:-}" = "--dry-run" ]; then
+	dry=1
+	shift
+fi
+[ "$#" -eq 1 ] || usage
+if [ "$1" = "-" ]; then
+	input="$(cat)"
+else
+	input="$(cat -- "$1")" || usage
+fi
+
+# shellcheck disable=SC2016 # jq program, not shell expansions
+render='
+def one($k): if type == "string" and test("\\A[^\r\n]*\\S[^\r\n]*\\z") then . else error("\($k): a non-empty one-line string") end;
+def opt($k; $d): if . == null then $d else one($k) end;
+def list($k): if . == null then [] elif type == "array" then . else error("\($k): a list") end;
+def int($k): if type == "number" and . >= 1 and . == floor then . else error("\($k): a positive integer") end;
+def code_span: . as $text | ([match("`+"; "g") | .length] | max // 0) as $longest | ("`" * ($longest + 1)) as $fence | "\($fence) \($text) \($fence)";
+def html: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+def bullets: if length == 0 then "- none" else map("- " + (. | html)) | join("\n") end;
+if length != 1 then error("input: exactly one JSON object") else .[0] end
+| if type != "object" then error("input: a JSON object") else . end
+| (.kind | one("kind") | if . == "review" then . elif . == "lead" then error("kind: lead is not supported yet; post-verdict renders kind review only") else error("kind: review") end) as $kind
+| (.repo | one("repo") | if test("\\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\\z") then . else error("repo: owner/repo") end) as $repo
+| (.pr | int("pr")) as $pr
+| (.sha | one("sha") | if type == "string" and test("\\A[0-9a-f]{40}\\z") then . else error("sha: the full 40-hex head sha") end) as $sha
+| ["approve", "fix-first"] as $ok
+| (.verdict | one("verdict") | if IN($ok[]) then . else error("verdict: one of \($ok | join(", ")) for kind \($kind)") end) as $verdict
+| (.blast_radius | one("blast_radius") | if . == "confirmed" or test("\\Awrong: \\S.*\\z") then . else error("blast_radius: confirmed or wrong: <why>") end) as $blast
+| if $verdict == "approve" and ($blast | startswith("wrong:")) then error("verdict: a wrong blast radius is a fix-first") else . end
+| (.escalate | if . == null then null else one("escalate") end) as $escalate
+| (.round | if . == null then 1 else int("round") end) as $round
+| (.board_issue | if . == null then null else one("board_issue") end) as $board
+| [.findings | list("findings")[]
+	| if type == "object" then . else error("findings: objects") end
+	| {sev: (.severity | one("finding severity") | if IN("P0", "P1", "P2") then . else error("finding severity: P0, P1 or P2") end),
+	   title: (.title | one("finding title")),
+	   at: (.at | one("finding at") | if type == "string" and test("\\A[^\\s:`]+:[0-9]+(-[0-9]+)?\\z") then . else error("finding at: path:line, got \(tojson)") end),
+	   evidence: (.evidence | one("finding evidence")),
+	   fix: (.fix | one("finding fix"))}] as $findings
+| any($findings[]; .sev != "P2") as $blocker
+| if $blocker and $verdict != "fix-first" then error("verdict: a P0 or P1 finding makes it fix-first") else . end
+| [$findings[] | "**\(.sev | html) — \(.title | html)** — `\(.at | html)`"
+	+ "\n   \(.evidence | html)\n   **Fix:** \(.fix | html)"] as $items
+| (if $items == [] then "- none" else [$items | to_entries[] | "\(.key + 1). \(.value)"] | join("\n") end) as $list
+| [.suggestions | list("suggestions")[] | one("suggestion")] as $sugg
+| (.ran | if . == null then "nothing" else "\(.command | one("ran command") | code_span) -> exit \(.exit | if type == "number" then . else error("ran exit: a number") end)" end) as $ran
+| "## Review of \($repo | html)#\($pr) at \($sha[:7] | html)\n\n**Ran:** \($ran)\n**Checks:** \(.checks | opt("checks"; "none run") | html)\n\n### Findings\n\($list)\n\n### Suggestions (not defects)\n\($sugg | bullets)\n\n**Round:** \($round)\n\(if $escalate == null then "" else "escalate: \($escalate | html)\n" end)verdict: \($verdict | html)\nblast radius: \($blast | html)"'
+
+if ! body="$(printf '%s' "$input" | jq -ser "$render" 2>&1)"; then
+	echo "post-verdict: ${body#jq: error*): }" >&2
+	exit 2
+fi
+
+bytes="$(printf '%s' "$body" | wc -c | tr -d '[:space:]')"
+if [ "$bytes" -gt 60000 ]; then
+	echo "post-verdict: body too long ($bytes bytes, limit 60000, forge-post's cap)" >&2
+	exit 1
+fi
+
+if [ "$dry" -eq 1 ]; then
+	printf '%s\n' "$body"
+	exit 0
+fi
+
+for name in FORGEJO_API_URL FORGEJO_TOKEN FLEET_EMPLOYEE FLEET_HARNESS FLEET_MODEL; do
+	if [ -z "${!name:-}" ]; then
+		echo "post-verdict: required environment variable $name is missing or empty" >&2
+		exit 3
+	fi
+done
+
+repo="$(printf '%s' "$input" | jq -r .repo)"
+pr="$(printf '%s' "$input" | jq -r .pr)"
+board="$(printf '%s' "$input" | jq -r '.board_issue // empty')"
+
+if [ -n "$board" ]; then
+	if [ -z "${PAPERCLIP_RUN_ID:-}" ]; then
+		echo "post-verdict: PAPERCLIP_RUN_ID is required for the board copy" >&2
+		exit 3
+	fi
+	paperclipai issue comment "$board" --run-id "$PAPERCLIP_RUN_ID" --body "$body" >/dev/null ||
+		{ echo "post-verdict: board comment on $board failed; nothing posted to Forge" >&2; exit 1; }
+fi
+
+printf '%s' "$body" | "$(dirname "$(realpath "$0")")/forge-post" comment "$repo" "$pr" -

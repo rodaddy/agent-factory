@@ -1,0 +1,117 @@
+#!/usr/bin/env bun
+/**
+ * agent-matrix: per-agent speed, queue, failure and quality report
+ * from the Paperclip board API (GET only). Markdown on stdout; --json for the
+ * raw tables. I/O only; logic lives in agent-matrix-lib.ts.
+ *
+ * Env: PAPERCLIP_API_URL (default http://127.0.0.1:3100),
+ *      PAPERCLIP_BOARD_TOKEN or PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID (required).
+ * Exit: 0 ok, 1 board unreachable or token refused, 2 bad usage.
+ */
+import {
+	type Agent,
+	buildMatrix,
+	type Comment,
+	type Issue,
+	LEAD_RE,
+	lastVerdict,
+	type Run,
+	renderMarkdown,
+	type Verdict,
+} from "./agent-matrix-lib.ts";
+
+const USAGE = "usage: agent-matrix [--json] [--hours N]";
+const args = process.argv.slice(2);
+let asJson = false;
+let hours: number | undefined;
+for (let i = 0; i < args.length; i++) {
+	const a = args[i];
+	if (a === "--json") asJson = true;
+	else if (a === "--hours" && /^[1-9][0-9]*$/.test(args[i + 1] ?? "")) hours = Number(args[++i]);
+	else {
+		console.error(USAGE);
+		process.exit(2);
+	}
+}
+const base = (process.env.PAPERCLIP_API_URL ?? "http://127.0.0.1:3100").replace(/\/+$/, "");
+const token = process.env.PAPERCLIP_BOARD_TOKEN || process.env.PAPERCLIP_API_KEY;
+const co = process.env.PAPERCLIP_COMPANY_ID;
+if (!token || !co) {
+	console.error(
+		`agent-matrix: PAPERCLIP_COMPANY_ID and PAPERCLIP_BOARD_TOKEN or PAPERCLIP_API_KEY are required; ${USAGE}`,
+	);
+	process.exit(2);
+}
+
+class Fatal extends Error {}
+
+async function get<T>(path: string): Promise<T> {
+	let r: Response;
+	try {
+		r = await fetch(`${base}/api${path}`, {
+			headers: { Authorization: `Bearer ${token}` },
+			signal: AbortSignal.timeout(20_000),
+		});
+	} catch (e) {
+		throw new Fatal(`board unreachable at ${base}: ${(e as Error).message}`);
+	}
+	if (r.status === 401 || r.status === 403)
+		throw new Fatal(`board refused the token (${r.status} on GET ${path})`);
+	if (!r.ok) throw new Error(`GET ${path} -> ${r.status}`);
+	return (await r.json()) as T;
+}
+
+async function main(): Promise<void> {
+	const list = await get<{ id: string }[]>(`/companies/${co}/agents`);
+	const agents: Agent[] = [];
+	for (const a of list) {
+		const d = await get<{
+			name: string;
+			title?: string;
+			adapterType: string;
+			adapterConfig?: { model?: string; effort?: string };
+			runtimeConfig?: { heartbeat?: { maxConcurrentRuns?: number } };
+		}>(`/agents/${a.id}`);
+		agents.push({
+			id: a.id,
+			name: d.name,
+			title: d.title ?? "",
+			harness: d.adapterType,
+			model: d.adapterConfig?.model ?? "default",
+			effort: d.adapterConfig?.effort ?? "default",
+			maxConc: d.runtimeConfig?.heartbeat?.maxConcurrentRuns ?? "",
+		});
+	}
+	const runs = await get<Run[]>(`/companies/${co}/heartbeat-runs?limit=5000`);
+	const issues = await get<Issue[]>(`/companies/${co}/issues?limit=5000`);
+	const leads = issues.filter((i) => LEAD_RE.test(i.title));
+	const verdicts = new Map<string, Verdict | null>();
+	let next = 0;
+	const worker = async () => {
+		while (next < leads.length) {
+			const i = leads[next++] as Issue;
+			try {
+				verdicts.set(i.id, lastVerdict(await get<Comment[]>(`/issues/${i.id}/comments`)));
+			} catch (e) {
+				if (e instanceof Fatal) throw e;
+				verdicts.set(i.id, null);
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: 6 }, worker));
+	const m = buildMatrix({
+		agents,
+		runs,
+		issues,
+		verdicts,
+		sinceMs: hours == null ? undefined : Date.now() - hours * 3600000,
+	});
+	process.stdout.write(asJson ? `${JSON.stringify(m, null, 2)}\n` : renderMarkdown(m));
+}
+
+try {
+	await main();
+} catch (e) {
+	console.error(`agent-matrix: ${(e as Error).message.split("\n")[0]}`);
+	process.exit(1);
+}

@@ -1,0 +1,5 @@
+{
+	"tools": ["read", "grep", "find", "ls", "bash", "write", "edit"],
+	"extensions": ["pi-extensions/fleet-guard/index.ts", "pi-extensions/langfuse-trace/index.ts"],
+	"agentDir": "~/.pi/seats/nagatha-ops"
+}

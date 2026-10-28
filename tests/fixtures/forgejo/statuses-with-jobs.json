@@ -1,0 +1,50 @@
+{
+	"_provenance": "Rows 1-4: live GET /repos/rodaddy/software-factory/commits/64bd7b6c4e5b86a6bbe73bee6a44f218034eaeb4/statuses (PR #950 head), 2026-09-24, trimmed of creator/url/created_at. Row 5 is the lane record in the shape pr-review.yml posts (absolute RUN_URL = server_url/repo/actions/runs/N); no lane record was live on that sha when sampled.",
+	"statuses": [
+		{
+			"id": 1,
+			"context": "factory-smoke / head-check (pull_request)",
+			"status": "pending",
+			"state": null,
+			"target_url": "/rodaddy/software-factory/actions/runs/2348/jobs/0",
+			"updated_at": "2026-09-24T18:37:56-04:00",
+			"description": "Waiting to run"
+		},
+		{
+			"id": 2,
+			"context": "factory-smoke / smoke (pull_request)",
+			"status": "pending",
+			"state": null,
+			"target_url": "/rodaddy/software-factory/actions/runs/2348/jobs/1",
+			"updated_at": "2026-09-24T18:37:56-04:00",
+			"description": "Blocked by required conditions"
+		},
+		{
+			"id": 3,
+			"context": "pr-review / review (pull_request)",
+			"status": "pending",
+			"state": null,
+			"target_url": "/rodaddy/software-factory/actions/runs/2349/jobs/0",
+			"updated_at": "2026-09-24T18:37:56-04:00",
+			"description": "Waiting to run"
+		},
+		{
+			"id": 4,
+			"context": "pr-review / finalize (pull_request)",
+			"status": "pending",
+			"state": null,
+			"target_url": "/rodaddy/software-factory/actions/runs/2349/jobs/1",
+			"updated_at": "2026-09-24T18:37:56-04:00",
+			"description": "Blocked by required conditions"
+		},
+		{
+			"id": 5,
+			"context": "factory/pr-review",
+			"status": "pending",
+			"state": null,
+			"target_url": "https://forge.example.internal/rodaddy/software-factory/actions/runs/2349",
+			"updated_at": "2026-09-24T18:38:10-04:00",
+			"description": "pr-review running"
+		}
+	]
+}

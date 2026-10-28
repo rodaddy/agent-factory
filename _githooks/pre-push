@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+#
+# software-factory pre-push gate (L-114).
+#
+# The runner-box receipt is RETIRED: the one full check per head is the
+# required commit status factory/prepush, posted by .forgejo/workflows/prepush.yml
+# on the PR head. This hook keeps only fixed git reads (every pushed ref is
+# exact HEAD, no deletions, a recognised destination, a clean tree, a fresh
+# installed copy). It runs no candidate code: no bun, no package.json script,
+# no tests, no runner, no receipt file, never src/index.ts. The full check,
+# lint and typecheck included, is factory/prepush on Actions.
+#
+# It is installed into the Git COMMON hooks directory (not core.hooksPath to the
+# mutable checkout), so it works in linked worktrees and cannot be swapped by
+# editing tracked files. Git invokes it as:  pre-push <remote-name> <remote-url>
+# with the ref updates on stdin. This hook never runs `git push` itself.
+set -euo pipefail
+
+remote_name="${1:-}"
+remote_url="${2:-}"
+
+# A nested invocation is always a bug. Fail closed instead of recursing.
+if [[ "${RODADDY_WATCHER_PREPUSH_ACTIVE:-}" == "1" ]]; then
+  echo "pre-push blocked: recursive hook invocation" >&2
+  exit 1
+fi
+export RODADDY_WATCHER_PREPUSH_ACTIVE=1
+
+# --- Repository state (fixed git reads only) ---------------------------------
+repo_root="$(git rev-parse --show-toplevel)"
+git_common_dir="$(git -C "$repo_root" rev-parse --git-common-dir)"
+case "$git_common_dir" in
+  /*) : ;;                                   # already absolute
+  *) git_common_dir="$repo_root/$git_common_dir" ;;
+esac
+zero_sha="0000000000000000000000000000000000000000"
+head_sha="$(git -C "$repo_root" rev-parse HEAD)"
+
+
+# --- Ref-binding gate --------------------------------------------------------
+# Git feeds every push update on stdin as:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A push may carry exactly one SHA (the clean HEAD). Parse every update and
+# refuse anything that is not exactly HEAD. A
+# deletion (all-zero local SHA) transfers no object but is never authorized by a
+# HEAD push, so it is rejected. Only empty/no-op stdin exits cleanly with no
+# check, because nothing is transferred.
+saw_update=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -n "${local_ref:-}${local_sha:-}${remote_ref:-}${remote_sha:-}" ]] || continue
+  saw_update=1
+
+  if [[ "$local_sha" == "$zero_sha" || -z "$local_sha" ]]; then
+    echo "pre-push blocked: ref deletion is not authorized (${remote_ref:-?})" >&2
+    exit 1
+  fi
+  # Retry-named branch guard: a kickback or re-cut is a new commit on
+  # the SAME branch, never a new "-v2" branch beside it. Only a branch being
+  # created on the remote is checked. The suffix match is case-insensitive, and
+  # a retry name is refused only when the stem branch already exists on the
+  # remote.
+  if [[ "$remote_sha" == "$zero_sha" && "$remote_ref" == refs/heads/* ]]; then
+    new_name="${remote_ref#refs/heads/}"
+    lc_name="$(printf '%s' "$new_name" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$lc_name" =~ (-v[0-9]+|-recut|-redo|-retry)$ ]]; then
+      lc_stem="$(printf '%s' "$lc_name" | sed -E 's/((-v[0-9]+)|-recut|-redo|-retry)+$//')"
+      stem="${new_name:0:${#lc_stem}}"
+      if [[ -n "$remote_name" ]] && git ls-remote --exit-code --heads "$remote_name" "refs/heads/$stem" </dev/null >/dev/null 2>&1; then
+        echo "pre-push blocked: new branch '$new_name' is a retry of '$stem'; push the fix as a new commit on '$stem', or name a new branch for new work" >&2
+        exit 1
+      fi
+    fi
+  fi
+  if [[ "$local_sha" != "$head_sha" ]]; then
+    echo "pre-push blocked: $local_ref points at $local_sha, not exact HEAD $head_sha" >&2
+    exit 1
+  fi
+done
+
+if [[ "$saw_update" -eq 0 ]]; then
+  exit 0
+fi
+
+# --- Destination identity ----------------------------------------------------
+# Bind the push to the ACTUAL push destination git handed the hook as its
+# second argument ($2). Git invokes `pre-push <remote-name> <remote-url>` with
+# $2 the concrete location being pushed to, so $2 is the authoritative
+# destination. We normalize $2 alone and FAIL CLOSED if it is not a recognised
+# supported forge owner/repo URL — we deliberately do NOT fall back to the named remote's
+# configured URL after an unrecognized $2. Falling back would let a push whose
+# real destination git reported (e.g. an attacker URL, or a rewritten
+# insteadOf/pushurl) be re-bound to origin's identity and slip through
+# for a repository that is not where the objects are actually going.
+normalize_remote_identity() {
+  # Echo "provider|canonical-https-host|owner/repo" for a reviewed URL, else nothing.
+  local url="$1"
+  url="${url%/}"          # tolerate a single trailing slash
+  url="${url%.git}"       # tolerate a trailing .git
+  local provider=""
+  local host=""
+  local path=""
+  case "$url" in
+    git@github.com:*) provider="github"; host="github.com"; path="${url#git@github.com:}" ;;
+    https://github.com/*) provider="github"; host="github.com"; path="${url#https://github.com/}" ;;
+    https://forge.example.internal/*)
+      provider="forgejo"; host="forge.example.internal"; path="${url#https://forge.example.internal/}"
+      ;;
+    ssh://git@git-ssh.example.internal:2222/*)
+      provider="forgejo"; host="forge.example.internal"
+      path="${url#ssh://git@git-ssh.example.internal:2222/}"
+      ;;
+    *) return 0 ;;
+  esac
+  # Exactly owner/repo, both from the safe charset, no extra path segments.
+  if [[ "$path" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    printf '%s|%s|%s\n' "$provider" "$host" "$path"
+  fi
+}
+
+expected_identity="$(normalize_remote_identity "$remote_url")"
+if [[ -z "$expected_identity" ]]; then
+  echo "pre-push blocked: push remote is not a recognised supported forge owner/repo URL" >&2
+  exit 1
+fi
+IFS='|' read -r _ _ expected_repo <<< "$expected_identity"
+
+# --- Clean-tree gate (fixed git read) ----------------------------------------
+# The PR check runs the exact clean committed HEAD; a dirty tree means local
+# bytes differ from the committed candidate that was validated.
+if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]]; then
+  echo "pre-push blocked: requires a clean working tree at exact HEAD; commit or discard changes" >&2
+  exit 1
+fi
+
+# --- Freshness self-check -------------------------------------------
+# The installed copy IS the gate, and it is a copy on purpose: install-hooks.sh
+# refuses to point core.hooksPath at the tracked file, because then any commit
+# that edits _githooks/pre-push would change what the operator's push hook
+# executes. The cost of a copy is that it goes stale silently: PR #578 changed a
+# pin in the tracked source, every installed copy kept the old literal, and the
+# gate refused correct pushes. So the copy compares
+# its own BYTES against the tracked source and, on a mismatch, names itself and
+# the installer. It never sources or executes the tracked file, and it never
+# self-installs; that would be exactly the property the copy exists to hold.
+# A checkout without the tracked file (a foreign repo, a shallow export) is not
+# stale, it is out of scope, and the check is skipped rather than failed.
+tracked_hook="$repo_root/_githooks/pre-push"
+installed_hook="${BASH_SOURCE[0]}"
+if [[ -f "$tracked_hook" && ! -L "$tracked_hook" ]] && ! cmp -s "$tracked_hook" "$installed_hook"; then
+  echo "pre-push blocked: the installed pre-push hook is stale (it differs from _githooks/pre-push); run ./scripts/install-hooks.sh" >&2
+  exit 1
+fi
+
+echo "pre-push accepted for $head_sha -> $expected_repo; factory/prepush runs the full check on the PR"
+exit 0

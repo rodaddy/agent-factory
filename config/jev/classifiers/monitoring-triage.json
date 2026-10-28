@@ -1,0 +1,317 @@
+{
+	"id": "monitoring-triage",
+	"version": 1,
+	"about": "D4: is a [monitoring-critical] alert explained by known maintenance or a transient outage? Advisory only.",
+	"type": "noul",
+	"ask": "The state is a critical alert raised by the software-factory watcher: `alert_class` (what failed), `cause` (the bounded error text), and `utc_time` (when it fired, HH:MM UTC). Is this alert EXPECTED, meaning it is fully explained by known maintenance or a transient outage that clears on its own, so no one needs to act? Known maintenance: Forgejo (Forge) stops for about 4 minutes every night for its backup, starting 03:17 UTC, so a Forgejo timeout, connection refused or reset, HTTP 502/503/504, or a lane with no postings, fired between 03:10 and 03:35 UTC, is expected. A cause that itself says maintenance, a planned restart, or a deploy in progress is expected at any time. A defect, database, authentication, or config error is never expected, even inside the maintenance window or when the cause also mentions maintenance: that rule wins over every expected case. Answer no for anything else: a code defect (TypeError, undefined, cannot read properties, a parse, schema, or validation error), a database or SQL error, an authentication or permission failure (401, 403, permission denied, token), an invalid config, a timeout or outage outside the maintenance window, or anything you cannot explain as maintenance.",
+	"confident": 0.8,
+	"policy": {
+		"yes": {
+			"verdict": "EXPECTED",
+			"order": 0,
+			"why": "known maintenance or transient outage"
+		},
+		"no": {
+			"verdict": "INVESTIGATE",
+			"order": 1,
+			"why": "a real stall or defect"
+		}
+	},
+	"unsure": {
+		"verdict": "UNSURE"
+	},
+	"no_signal": {
+		"verdict": "NO_SIGNAL",
+		"why": "no Jev signal"
+	},
+	"examples": [
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "The operation timed out.",
+				"utc_time": "03:18 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "The operation timed out.",
+				"utc_time": "05:02 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "TypeError: Cannot read properties of undefined (reading 'sha')",
+				"utc_time": "14:40 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:pr-review",
+				"cause": "lane pr-review: 3 job(s) dispatched since 2026-09-26T03:03:00.000Z (the oldest unposted dispatch), 0 postings after 30 minutes",
+				"utc_time": "03:33 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:issue-triage",
+				"cause": "lane issue-triage: 2 job(s) dispatched since 2026-09-27T10:12:00.000Z (the oldest unposted dispatch), 0 postings after 30 minutes",
+				"utc_time": "10:44 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "watcher restarted for deploy of 3096f27; forge client not ready",
+				"utc_time": "16:05 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "ZodError: expected array, received null",
+				"utc_time": "03:20 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "build-bump:software-factory",
+				"cause": "Forgejo request failed: connect ECONNREFUSED 10.0.20.58:3000",
+				"utc_time": "03:19 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "build-bump:fleet-board",
+				"cause": "Forgejo request failed: connect ECONNREFUSED 10.0.20.58:3000",
+				"utc_time": "21:37 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "PostgresError: relation \"job_attempts\" does not exist",
+				"utc_time": "08:15 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "Forgejo request failed: HTTP 502 Bad Gateway",
+				"utc_time": "03:21 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "Forgejo request failed: HTTP 502 Bad Gateway",
+				"utc_time": "12:09 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "Forgejo request failed: HTTP 401 Unauthorized",
+				"utc_time": "03:25 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "scale drought",
+				"cause": "runner scale-up skipped: Forgejo request failed: HTTP 503",
+				"utc_time": "03:23 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "scale drought",
+				"cause": "runner scale-up skipped: Forgejo request failed: HTTP 503",
+				"utc_time": "18:50 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "scale drought",
+				"cause": "permission denied for table forge_runs",
+				"utc_time": "02:14 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "Forgejo request failed: socket hang up",
+				"utc_time": "03:26 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "Forgejo request failed: socket hang up",
+				"utc_time": "00:41 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:issue-triage",
+				"cause": "lane issue-triage: 4 job(s) dispatched since 2026-09-28T02:58:00.000Z (the oldest unposted dispatch), 0 postings after 30 minutes",
+				"utc_time": "03:28 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "config invalid: forge_runner_fleet.cap must be >= floor",
+				"utc_time": "09:30 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "scale drought",
+				"cause": "planned restart of Forgejo for version upgrade; runner API unavailable",
+				"utc_time": "11:20 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:prepush",
+				"cause": "lane prepush: 1 job(s) dispatched since 2026-09-28T06:40:00.000Z (the oldest unposted dispatch), 0 postings after 30 minutes",
+				"utc_time": "07:11 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "build-bump:rtech-infra",
+				"cause": "Forgejo request failed: request timed out",
+				"utc_time": "03:14 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "build-bump:rtech-infra",
+				"cause": "Forgejo request failed: request timed out",
+				"utc_time": "03:52 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:smoke",
+				"cause": "TypeError: Cannot read properties of undefined (reading 'number')",
+				"utc_time": "03:30 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:smoke",
+				"cause": "lane smoke: 1 job(s) dispatched since 2026-09-29T03:00:00.000Z (the oldest unposted dispatch), 0 postings after 30 minutes",
+				"utc_time": "03:31 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:infra-static",
+				"cause": "lane infra-static: 2 job(s) dispatched since 2026-09-25T22:30:00.000Z (the oldest unposted dispatch), 0 postings after 30 minutes",
+				"utc_time": "23:05 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "build-bump:software-factory",
+				"cause": "ZodError: expected string, received undefined at path tag",
+				"utc_time": "15:58 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:implement",
+				"cause": "Forgejo in scheduled maintenance window for database migration; lane postings paused",
+				"utc_time": "19:45 UTC"
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "Forgejo request failed: HTTP 503",
+				"utc_time": "03:02 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "PostgresError: relation \"forge_runs\" does not exist",
+				"utc_time": "03:16 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:pr-review",
+				"cause": "Forgejo request failed: HTTP 403 Forbidden",
+				"utc_time": "11:48 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "postings-absence:implement",
+				"cause": "lane implement: 2 job(s) dispatched since 2026-09-27T13:10:00.000Z (the oldest unposted dispatch), 0 postings after 30 minutes",
+				"utc_time": "13:41 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "build-bump:fleet-board",
+				"cause": "Forgejo request failed: HTTP 401 Unauthorized",
+				"utc_time": "20:22 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "scale drought",
+				"cause": "Forgejo request failed: connect ECONNREFUSED 10.0.20.58:3000",
+				"utc_time": "04:10 UTC"
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"alert_class": "reconcile pass error",
+				"cause": "config invalid: forge_runner_fleet.floor must be an integer",
+				"utc_time": "06:33 UTC"
+			},
+			"expect": "no"
+		}
+	]
+}

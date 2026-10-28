@@ -1,0 +1,220 @@
+#!/bin/bash
+# ensure-project -- a board project the first time the company works on a
+# repo. Reads the repo from Forge, clones it when the checkout is
+# missing, and creates the board project plus its primary workspace once.
+#
+# Usage:
+#   ensure-project [--no-worktrees] <owner/repo>
+#
+# Every repo project gets the git-worktree execution policy: each task
+# runs in its own worktree under /home/operator/fleet-work/.worktrees/<owner>/<repo>.
+# It is written with `paperclipai project update` (PATCH /api/projects/:id,
+# Paperclip cli/src/commands/client/project.ts:179, server/src/routes/projects.ts:324),
+# only when the board's policy differs. --no-worktrees leaves the policy alone.
+#
+# Required environment (missing or empty is exit 3, nothing is done):
+#   FORGEJO_API_URL FORGEJO_TOKEN
+# Optional:
+#   FLEET_SRC_DIR        checkout root (default $HOME/src)
+#   FLEET_PROJECTS_FILE  overrides (default <script dir>/../board/projects.json)
+#   FLEET_COMPANY        board company name (default "Software Factory")
+#
+# Overrides file: {"<owner/repo>": {"defaultRef", "setupCommand", "lead"}},
+# every field optional; `lead` is an employee NAME.
+#
+# Stdout is one line: project=<id> repo=<owner/repo> state=<created|unchanged|repaired>
+#
+# Exit: 0 ok | 1 Forge or clone failure | 2 bad argument |
+#       3 missing environment, bad overrides file, no company, unknown lead.
+#
+# The token never reaches argv and no temp file is written: the auth header
+# goes to curl through a process substitution.
+set -euo pipefail
+
+usage() {
+	echo "usage: ensure-project [--no-worktrees] <owner/repo>" >&2
+	exit 2
+}
+
+REPO_RE='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+
+worktrees=1
+if [ "${1:-}" = "--no-worktrees" ]; then
+	worktrees=0
+	shift
+fi
+[ "$#" -eq 1 ] || usage
+repo="$1"
+[[ "$repo" =~ $REPO_RE ]] || usage
+
+for name in FORGEJO_API_URL FORGEJO_TOKEN; do
+	if [ -z "${!name:-}" ]; then
+		echo "ensure-project: required environment variable $name is missing or empty" >&2
+		exit 3
+	fi
+done
+
+owner="${repo%%/*}"
+short="${repo##*/}"
+src_dir="${FLEET_SRC_DIR:-$HOME/src}"
+# Resolve this script through a symlink first: it is installed as
+# ~/.local/bin/ensure-project -> ~/fleet/bin/ensure-project, and BASH_SOURCE
+# is the link, so the overrides file was looked for beside the link and never
+# found (PR 1151 review).
+self="$(readlink -f "${BASH_SOURCE[0]}")"
+projects_file="${FLEET_PROJECTS_FILE:-$(dirname "$self")/../board/projects.json}"
+company="${FLEET_COMPANY:-Software Factory}"
+
+# Read the repo from Forge before anything is cloned or created.
+# A curl config value is a quoted string: escape backslash and double quote.
+token="${FORGEJO_TOKEN//\\/\\\\}"
+token="${token//\"/\\\"}"
+out="$(curl -sS -m 30 \
+	--config <(printf 'header = "Authorization: token %s"\n' "$token") \
+	-o - -w '\n%{http_code}' "${FORGEJO_API_URL%/}/repos/$repo")" || true
+code="${out##*$'\n'}"
+response="${out%$'\n'*}"
+if [ "$code" != "200" ]; then
+	echo "ensure-project: cannot read $repo on Forge (HTTP ${code:-000})" >&2
+	exit 1
+fi
+clone_url="$(printf '%s' "$response" | jq -r '.clone_url // empty')"
+default_ref="$(printf '%s' "$response" | jq -r '.default_branch // empty')"
+if [ -z "$clone_url" ]; then
+	echo "ensure-project: Forge reply for $repo has no clone_url" >&2
+	exit 1
+fi
+
+# Overrides: a missing file or a missing key means defaults.
+override='{}'
+if [ -f "$projects_file" ]; then
+	if ! override="$(jq -c --arg repo "$repo" '.[$repo] // {}' "$projects_file" 2>/dev/null)" ||
+		[ -z "$override" ]; then
+		echo "ensure-project: $projects_file is not a valid overrides file" >&2
+		exit 3
+	fi
+fi
+override_ref="$(printf '%s' "$override" | jq -r '.defaultRef // empty')"
+setup_command="$(printf '%s' "$override" | jq -r '.setupCommand // empty')"
+lead="$(printf '%s' "$override" | jq -r '.lead // empty')"
+[ -z "$override_ref" ] || default_ref="$override_ref"
+
+company_id="$(paperclipai company list --json |
+	jq -r --arg name "$company" '[.[] | select(.name == $name) | .id][0] // empty')"
+if [ -z "$company_id" ]; then
+	echo "ensure-project: no company named $company on the board" >&2
+	exit 3
+fi
+
+# The lead is resolved before the clone: an unknown name leaves nothing behind.
+lead_args=()
+if [ -n "$lead" ]; then
+	lead_id="$(paperclipai agent list -C "$company_id" --json |
+		jq -r --arg name "$lead" '[.[] | select(.name == $name) | .id][0] // empty')"
+	if [ -z "$lead_id" ]; then
+		echo "ensure-project: no employee named $lead in $company" >&2
+		exit 3
+	fi
+	lead_args=(--lead-agent-id "$lead_id")
+fi
+
+dir="$src_dir/$owner/$short"
+
+# One caller at a time per repo, from the clone to the workspace. Two employees
+# asking for a new repo at the same moment both saw no project and both
+# created one; the board has no unique name and suffixes the second (PR 1151
+# review).
+#
+# The lock is a kernel flock on a file (SOF-10932). It was a mkdir lock, and a
+# caller killed by a harness timeout or SIGKILL skipped its EXIT trap and left
+# the lock behind; every later call then hung silently for the whole wait. The
+# kernel drops a flock when the last process holding it exits, however it
+# exits, so a lock cannot outlive its holder and nothing ever deletes it: there
+# is no stale lock to break, and no check-then-remove step where a waiter
+# could remove a newer holder's lock (PR 1893 review). A child still running
+# when the caller is killed (a git clone) keeps the lock until it ends, which
+# is what keeps the next caller off a half-made checkout. The file is never
+# removed, because removing a flock file lets two callers lock two different
+# files. Its content is the holder pid, used only in messages.
+# ENSURE_PROJECT_LOCK_WAIT (seconds, default 120) is how long a waiter waits.
+command -v flock >/dev/null || {
+	echo "ensure-project: flock (util-linux) is not on PATH" >&2
+	exit 3
+}
+lock_wait="${ENSURE_PROJECT_LOCK_WAIT:-120}"
+[[ "$lock_wait" =~ ^[0-9]+$ ]] || {
+	echo "ensure-project: ENSURE_PROJECT_LOCK_WAIT must be whole seconds" >&2
+	exit 3
+}
+mkdir -p "$src_dir/$owner"
+lock="$src_dir/$owner/.$short.ensure-project.flock"
+exec 9>>"$lock"
+if ! flock -n 9; then
+	holder=""
+	read -r holder <"$lock" 2>/dev/null || true
+	echo "ensure-project: waiting on lock $lock (holder pid ${holder:-unknown})" >&2
+	if ! flock -w "$lock_wait" 9; then
+		echo "ensure-project: another call (pid ${holder:-unknown}) has held $lock for $lock_wait s" >&2
+		exit 1
+	fi
+fi
+echo "$$" >"$lock"
+if [ ! -e "$dir/.git" ]; then
+	mkdir -p "$src_dir/$owner"
+	if ! git clone "$clone_url" "$dir" >&2; then
+		echo "ensure-project: clone of $repo failed" >&2
+		exit 1
+	fi
+fi
+
+project="$(paperclipai project list -C "$company_id" --json |
+	jq -c --arg name "$repo" '[.[] | select(.name == $name)][0] // {}')"
+project_id="$(printf '%s' "$project" | jq -r '.id // empty')"
+
+# The execution workspace policy, written only when the board's differs.
+# No baseRef: Paperclip uses the repo's default branch.
+policy="$(jq -cn --arg repo "$repo" '{enabled: true, defaultMode: "isolated_workspace",
+	allowIssueOverride: true, workspaceStrategy: {type: "git_worktree",
+	branchTemplate: "{{issue.identifier}}-{{slug}}",
+	worktreeParentDir: ("/home/operator/fleet-work/.worktrees/" + $repo)}}')"
+set_policy() {
+	[ "$worktrees" = 1 ] || return 0
+	if [ "$(printf '%s' "$project" | jq --argjson want "$policy" '.executionWorkspacePolicy == $want')" != true ]; then
+		paperclipai project update "$project_id" --execution-workspace-policy-json "$policy" --json >&2
+	fi
+}
+# The workspace payload is needed on two paths: a new project, and an existing
+# project that was left without its primary workspace.
+payload="$(jq -n --arg name "$short" --arg cwd "$dir" --arg repoUrl "$clone_url" \
+	--arg defaultRef "$default_ref" --arg setupCommand "$setup_command" \
+	'{name: $name, sourceType: "git_repo", cwd: $cwd, repoUrl: $repoUrl,
+	  defaultRef: $defaultRef, isPrimary: true}
+	 + (if $setupCommand == "" then {} else {setupCommand: $setupCommand} end)')"
+
+if [ -n "$project_id" ]; then
+	# A project whose workspace creation failed earlier must not read as done
+	# (PR 1151 review): give it its primary workspace now.
+	primaries="$(paperclipai project-workspace list "$project_id" --json |
+		jq '[.[]? | select(.isPrimary == true)] | length')"
+	if [ "$primaries" = 0 ]; then
+		paperclipai project-workspace create "$project_id" --payload-json "$payload" --json >&2
+		set_policy
+		echo "project=$project_id repo=$repo state=repaired"
+		exit 0
+	fi
+	set_policy
+	echo "project=$project_id repo=$repo state=unchanged"
+	exit 0
+fi
+
+project_id="$(paperclipai project create -C "$company_id" --name "$repo" \
+	--description "Forge repo $repo" ${lead_args[@]+"${lead_args[@]}"} --json | jq -r '.id // empty')"
+if [ -z "$project_id" ]; then
+	echo "ensure-project: project create returned no id" >&2
+	exit 1
+fi
+
+paperclipai project-workspace create "$project_id" --payload-json "$payload" --json >&2
+set_policy
+
+echo "project=$project_id repo=$repo state=created"

@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Root-owned installed entrypoint; no paths or credentials accepted from callers.
+set -eu
+[ "$#" -eq 2 ] || { echo 'usage: factory-review-controller collect <capture-id> | complete <run-id>' >&2; exit 2; }
+case "$1" in
+  collect) exec /usr/local/bin/factory-review-admission collect "$2" ;;
+  complete) exec /usr/local/bin/factory-review-admission complete-record "$2" ;;
+  *) echo 'unsupported controller command' >&2; exit 2 ;;
+esac

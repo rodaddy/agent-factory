@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""seat-load: the board reads behind task-route. It owns every Paperclip call
+task-route needs, and nothing about skills, tiers or picking. It only reads.
+
+Usage: seat-load
+
+1. Agents: GET /api/companies/<co>/agents, every agent the board lists.
+2. Open: issues assigned to the agent in todo, in_progress or in_review. The
+   published openapi documents no filter on GET /api/companies/<co>/issues
+   (only `view`), so status and assignee are filtered client-side over every
+   page; the status/limit/offset query the server honors only narrows it.
+   Paging advances offset by the items returned and stops only on a page
+   with no new issue id (a board that caps limit cannot hide load), at most
+   MAX_PAGES pages per status. Issues are deduplicated by id.
+3. Output: one JSON line per board agent on stdout:
+   {"id","name","status","model","open"}, model from adapterConfig.model
+   (null when missing).
+
+Env: PAPERCLIP_API_URL (default http://10.0.20.105:3100),
+  PAPERCLIP_COMPANY_ID (required), PAPERCLIP_API_KEY or PAPERCLIP_BOARD_TOKEN
+  (Authorization: Bearer).
+
+Exit: 0 read; 2 bad usage or missing env; 3 harness error (board unreachable,
+non-2xx, not JSON, too many pages). The board key never reaches argv, stdout or
+stderr.
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+OPEN = ("todo", "in_progress", "in_review")
+PAGE = 200
+MAX_PAGES = 50
+
+SECRETS = []
+
+
+def scrub(text):
+    text = str(text)
+    for s in SECRETS:
+        if s:
+            text = text.replace(s, "***")
+    return text
+
+
+def die(msg, code):
+    sys.stderr.write(f"seat-load: {scrub(msg)}\n")
+    sys.exit(code)
+
+
+class Board:
+    def __init__(self):
+        self.api = (os.environ.get("PAPERCLIP_API_URL") or "http://10.0.20.105:3100").rstrip("/")
+        cid = os.environ.get("PAPERCLIP_COMPANY_ID")
+        if not cid:
+            die("set PAPERCLIP_COMPANY_ID", 2)
+        key = os.environ.get("PAPERCLIP_API_KEY") or os.environ.get("PAPERCLIP_BOARD_TOKEN")
+        if not key:
+            die("no board key: set PAPERCLIP_API_KEY or PAPERCLIP_BOARD_TOKEN", 2)
+        SECRETS.append(key)
+        self.key = key
+        self.co = f"/api/companies/{urllib.parse.quote(cid, safe='')}"
+
+    def get(self, path):
+        req = urllib.request.Request(
+            f"{self.api}{path}",
+            headers={"Accept": "application/json", "Authorization": f"Bearer {self.key}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:200] if e.fp else ""
+            die(f"board refused {path.split('?')[0]}: HTTP {e.code}: {detail}", 3)
+        except OSError as e:
+            die(f"board unreachable at {self.api}: {type(e).__name__}", 3)
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            die(f"board {path.split('?')[0]} answered with something that is not JSON", 3)
+        if not isinstance(data, list):
+            die(f"board {path.split('?')[0]} did not return a list", 3)
+        return data
+
+    def agents(self):
+        return [a for a in self.get(f"{self.co}/agents") if isinstance(a, dict)]
+
+    def load(self):
+        """{agentId: open issue count}, deduplicated by issue id across statuses and pages."""
+        seen = {}
+        for status in OPEN:
+            offset = 0
+            for _ in range(MAX_PAGES):
+                q = f"status={status}&limit={PAGE}&offset={offset}"
+                items = self.get(f"{self.co}/issues?{q}")
+                new = [it for it in items if isinstance(it, dict) and it.get("id") not in seen]
+                for it in new:
+                    seen[it.get("id")] = it
+                # A short page is NOT the last: the board may cap limit below
+                # PAGE. Stop on an empty page, or one with no new id (the end,
+                # or a server that ignores offset and repeats itself).
+                if not new:
+                    break
+                offset += len(items)
+            else:
+                die(f"board issues ({status}) has more than {MAX_PAGES} pages", 3)
+        out = {}
+        for it in seen.values():
+            if it.get("status") in OPEN and it.get("assigneeAgentId"):
+                out[it["assigneeAgentId"]] = out.get(it["assigneeAgentId"], 0) + 1
+        return out
+
+
+def main(argv):
+    if argv:
+        die(f"usage: seat-load takes no arguments, got {argv[0]}", 2)
+    board = Board()
+    agents = board.agents()
+    load = board.load()
+    for a in agents:
+        line = {
+            "id": a.get("id"),
+            "name": a.get("name"),
+            "status": a.get("status"),
+            "model": (a.get("adapterConfig") or {}).get("model"),
+            "open": load.get(a.get("id"), 0),
+        }
+        print(json.dumps(line))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -1,0 +1,53 @@
+#!/bin/bash
+# Compare the harness CLIs on this box with fleet/harness-versions and with the
+# latest npm release. Read-only: it never installs anything.
+# Prints {checkedAt, tools:[{tool,pinned,installed,latest,status}]}.
+# status: missing (no binary), drift (installed != pinned), behind (pinned !=
+# latest), ok. Exit 2 on any drift or missing, else 0 (behind is a candidate,
+# not a failure).
+set -euo pipefail
+
+pins="$HOME/fleet/harness-versions"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--pins) pins="${2:?--pins needs a file}"; shift 2 ;;
+	*) echo "harness-check: unknown argument: $1" >&2; exit 64 ;;
+	esac
+done
+[ -r "$pins" ] || { echo "harness-check: cannot read pins file $pins" >&2; exit 64; }
+
+# The pins file is KEY=VALUE; read it without sourcing.
+pin() { sed -n "s/^$1=\([0-9A-Za-z.+-]*\).*/\1/p" "$pins" | tail -n 1; }
+# First version-looking token of a command's output; empty when it fails.
+version_of() { "$@" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*' | head -n 1 || true; }
+
+npm_cmd="${HARNESS_NPM:-npm}"
+worst=0
+entries=()
+check() { # tool, binary, npm package, pin key
+	local tool="$1" bin="$2" pkg="$3" pinned installed="" latest status
+	pinned="$(pin "$4")"
+	if command -v "$bin" >/dev/null 2>&1; then
+		installed="$(version_of "$bin" --version)"
+	fi
+	latest="$(version_of "$npm_cmd" view "$pkg" version)"
+	if [ -z "$installed" ]; then
+		status=missing
+	elif [ "$installed" != "$pinned" ]; then
+		status=drift
+	elif [ -n "$latest" ] && [ "$pinned" != "$latest" ]; then
+		status=behind
+	else
+		status=ok
+	fi
+	case "$status" in missing | drift) worst=2 ;; esac
+	entries+=("$(printf '{"tool":"%s","pinned":"%s","installed":"%s","latest":"%s","status":"%s"}' \
+		"$tool" "$pinned" "$installed" "$latest" "$status")")
+}
+
+check claude "${HARNESS_CLAUDE:-claude}" @anthropic-ai/claude-code CLAUDE_CODE_VERSION
+check pi "${HARNESS_PI:-pi}" @earendil-works/pi-coding-agent PI_VERSION
+
+joined="$(IFS=,; echo "${entries[*]}")"
+printf '{"checkedAt":"%s","tools":[%s]}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$joined"
+exit "$worst"

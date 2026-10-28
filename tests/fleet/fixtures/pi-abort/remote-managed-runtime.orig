@@ -1,0 +1,24 @@
+import path from "node:path";
+import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
+import { prepareWorkspaceForSshExecution, runSshCommand, restoreWorkspaceFromSshExecution, syncDirectoryToSsh, } from "./ssh.js";
+            });
+        }
+    }
+    catch (error) {
+        if (preparedWorkspace && baselineSnapshot) {
+            await restoreWorkspaceFromSshExecution({
+                spec: input.spec,
+                localDir: input.workspaceLocalDir,
+                remoteDir: workspaceRemoteDir,
+                baselineSnapshot,
+                restoreGitHistory: preparedWorkspace.gitBacked,
+                onProgress: input.onProgress,
+            });
+        }
+        throw error;
+    }
+    // Stage each referenced (additional) project as a plain, read-only tree in its
+    // OWN isolated remote directory (`project-<projectId>`). Additional sources
+    // never get the anchor's git-history/overlay semantics. Per-project failure
+    // isolation: one project's failure logs a warning and is skipped; the run and
+    // the other projects continue (no workspace restore, unlike an asset failure).

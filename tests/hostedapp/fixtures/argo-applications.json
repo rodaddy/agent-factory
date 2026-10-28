@@ -1,0 +1,33 @@
+{
+	"apiVersion": "v1",
+	"kind": "List",
+	"items": [
+		{
+			"apiVersion": "argoproj.io/v1alpha1",
+			"kind": "Application",
+			"metadata": { "name": "linkedin-automation-uat", "namespace": "argocd" },
+			"status": {
+				"sync": {
+					"status": "Synced",
+					"revision": "578c4667f4370762eb515102699dd3257243ebd6"
+				},
+				"health": { "status": "Healthy" },
+				"summary": {
+					"images": [
+						"10.0.20.58:3000/rtech/linkedin-automation:v0.3.0@sha256:aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
+					]
+				}
+			}
+		},
+		{
+			"apiVersion": "argoproj.io/v1alpha1",
+			"kind": "Application",
+			"metadata": { "name": "linkedin-automation-ghost", "namespace": "argocd" },
+			"status": {
+				"sync": { "status": "OutOfSync", "revision": "1111111111111111111111111111111111111111" },
+				"health": { "status": "Degraded" },
+				"summary": { "images": ["10.0.20.58:3000/rtech/linkedin-automation:v0.1.0"] }
+			}
+		}
+	]
+}

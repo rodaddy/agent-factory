@@ -1,0 +1,11 @@
+{
+	"name": "@rodaddy/project-guard",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Every Software Factory board task carries a project (sf#1690)",
+	"paperclipPlugin": {
+		"manifest": "./manifest.js",
+		"worker": "./worker.js"
+	}
+}

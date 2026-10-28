@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""task-new: the one way an employee creates a board task. It refuses a ticket
+missing any of the nine ticket sections, so no task lands on the board without
+its done-means, blast radius and backout (sf#1442, DESIGN D3).
+
+Usage: task-new --file <ticket.md> [--check-only] [--title <t>]
+                [--assignee <agent-id>] [--parent <issue-id>]
+                [--project <project-id>] [--priority <p>]
+
+The nine sections are Development's _ob/templates/ticket.md: Problem, Done
+means, Scope, Must not, Threat model, Blast radius, What it might break,
+Backout, Test plan. A section is a `## <name>` heading (case-insensitive,
+trailing spaces ignored); its text runs to the next `#` or `##` heading. A
+section that is absent, or holds only whitespace, HTML comments (stripped from
+the whole file first; an unclosed one runs to end of file) or the template's
+guidance sentence, is missing. Order is not enforced.
+
+1. Any section missing: one `task-new: missing: <Name>` line per section on
+   stderr, exit 1, no request.
+2. --check-only: print `task-new: ok`, exit 0, no request.
+3. Otherwise POST /api/companies/<company>/issues (the route and the
+   createIssueSchema field names read from @paperclipai/server 2026.916.1,
+   dist/routes/issues.js and shared/dist/validators/issue.js) with the title
+   (default: the file's first `# ` line), the whole ticket as description, and
+   assigneeAgentId / parentId / projectId / priority when given; print the new
+   issue's identifier and id.
+
+Env: PAPERCLIP_API_URL (default http://10.0.20.105:3100),
+  PAPERCLIP_COMPANY_ID (required to create), PAPERCLIP_API_KEY or
+  PAPERCLIP_BOARD_TOKEN (Authorization: Bearer).
+
+Exit: 0 ok or created; 1 refused (a section missing); 2 bad usage; 3 harness
+error (board unreachable, non-2xx). The board key never reaches argv, stdout
+or stderr.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SECTIONS = (
+    "Problem",
+    "Done means",
+    "Scope",
+    "Must not",
+    "Threat model",
+    "Blast radius",
+    "What it might break",
+    "Backout",
+    "Test plan",
+)
+HEADING_RE = re.compile(r"^(#{1,2})[ \t]+(.*?)[ \t]*#*[ \t]*$")
+# An unclosed comment runs to end of file, as a renderer shows it.
+COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
+# Each section's guidance sentence, byte-copied from Development _ob/templates/ticket.md.
+GUIDANCE = {
+    "Problem": "What is wrong or missing today, in one or two sentences a stranger can read.",
+    "Done means": "Commands to run and the exact output each must give when the work is done.",
+    "Scope": "The files, hosts, or services this work may touch; nothing else.",
+    "Must not": "What this work must not do or change, even if it looks related.",
+    "Threat model": 'What this defends against and what it does not; "n/a: not a guard or security change" is valid.',
+    "Blast radius": "Who and what is affected if this goes wrong: repos, sessions, hosts, users.",
+    "What it might break": "The callers, workflows, or checks most likely to regress.",
+    "Backout": "The exact step that undoes it (revert the commit, move the tag back, restore the file).",
+    "Test plan": "The tests and manual checks that prove it, as commands.",
+}
+
+SECRETS = []
+
+
+def scrub(text):
+    text = str(text)
+    for s in SECRETS:
+        if s:
+            text = text.replace(s, "***")
+    return text
+
+
+def die(msg, code):
+    sys.stderr.write(f"task-new: {scrub(msg)}\n")
+    sys.exit(code)
+
+
+def sections_of(text):
+    """{lowercased `##` heading: [body, ...]} for every level-2 section."""
+    found = {}
+    name = None
+    for line in text.splitlines():
+        m = HEADING_RE.match(line)
+        if m:
+            name = m.group(2).strip().lower() if m.group(1) == "##" else None
+            if name is not None:
+                found.setdefault(name, []).append([])
+            continue
+        if name is not None:
+            found[name][-1].append(line)
+    return {k: ["\n".join(b) for b in v] for k, v in found.items()}
+
+
+def missing_sections(text):
+    found = sections_of(COMMENT_RE.sub("", text))
+    return [
+        s
+        for s in SECTIONS
+        if not any(
+            " ".join(body.split()) not in ("", GUIDANCE[s]) for body in found.get(s.lower(), [])
+        )
+    ]
+
+
+def first_title(text):
+    for line in text.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
+def create(text, args):
+    api = (os.environ.get("PAPERCLIP_API_URL") or "http://10.0.20.105:3100").rstrip("/")
+    cid = os.environ.get("PAPERCLIP_COMPANY_ID")
+    if not cid:
+        die("set PAPERCLIP_COMPANY_ID", 2)
+    key = os.environ.get("PAPERCLIP_API_KEY") or os.environ.get("PAPERCLIP_BOARD_TOKEN")
+    if not key:
+        die("no board key: set PAPERCLIP_API_KEY or PAPERCLIP_BOARD_TOKEN", 2)
+    SECRETS.append(key)
+    title = args.title or first_title(text)
+    if not title:
+        die("no title: give --title or start the ticket with a `# ` line", 2)
+    body = {"title": title, "description": text}
+    for field, value in (
+        ("assigneeAgentId", args.assignee),
+        ("parentId", args.parent),
+        ("projectId", args.project),
+        ("priority", args.priority),
+    ):
+        if value:
+            body[field] = value
+    url = f"{api}/api/companies/{urllib.parse.quote(cid, safe='')}/issues"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:200] if e.fp else ""
+        die(f"board refused the task: HTTP {e.code}: {detail}", 3)
+    except OSError as e:
+        die(f"board unreachable at {api}: {type(e).__name__}", 3)
+    try:
+        issue = json.loads(raw) if raw else {}
+    except ValueError:
+        die("board answered with something that is not JSON", 3)
+    if not isinstance(issue, dict) or not issue.get("id"):
+        die("board answered without an issue id", 3)
+    print(f"{issue.get('identifier') or issue['id']} {issue['id']}")
+    return 0
+
+
+def main(argv):
+    p = argparse.ArgumentParser(prog="task-new", description="Create a board task from a full ticket.")
+    p.add_argument("--file", required=True, help="the ticket markdown file")
+    p.add_argument("--check-only", action="store_true", help="check the sections; send nothing")
+    p.add_argument("--title")
+    p.add_argument("--assignee", help="assignee agent id")
+    p.add_argument("--parent", help="parent issue id")
+    p.add_argument("--project", help="project id")
+    p.add_argument("--priority", help="critical, high, medium or low")
+    args = p.parse_args(argv)
+    try:
+        with open(args.file, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        die(f"cannot read {args.file}: {type(e).__name__}", 2)
+
+    missing = missing_sections(text)
+    if missing:
+        for name in missing:
+            sys.stderr.write(f"task-new: missing: {name}\n")
+        return 1
+    # Work tickets carry the full contract and their authoritative Forge source.
+    title = args.title or first_title(text)
+    if not re.match(r"^\s*(triage|review|merge|write spec|spec-writing|diagnose|research|audit|run-audit|fleet audit|infra:|ask:|backlog:|config:)(?:\b|\s)", title, re.I) and not re.match(r"^\s*(?:Checks not green: \S+/\S+#\d+ @ [0-9a-f]{7,40}|Resolve merge-check read failure(?: on|:)? \S+/\S+#\d+(?: @ [0-9a-f]{7,40})?)$", title, re.I):
+        gate_args = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "spec-ready")]
+        gate_args += ["--file" if args.check_only else "--description-file", args.file]
+        if not args.check_only:
+            gate_args += ["--queue-spec"]
+        try:
+            gate = subprocess.run(gate_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=90)
+        except (OSError, subprocess.TimeoutExpired):
+            die("spec-ready harness failed", 3)
+        if gate.returncode != 0:
+            sys.stderr.buffer.write(gate.stderr)
+            die("spec-ready held: write the spec before creating work", 1 if gate.returncode == 1 else 3)
+    if args.check_only:
+        print("task-new: ok")
+        return 0
+    return create(text, args)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)

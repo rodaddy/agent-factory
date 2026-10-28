@@ -1,0 +1,93 @@
+{
+	"id": "f5e5edf4-e0e6-46da-a9bd-00e3ff06a3b7",
+	"companyId": "a079aa52-a28a-46a8-b959-a6086b549417",
+	"agentId": "76ad6ab2-939f-495e-9511-82bc48449f69",
+	"status": "succeeded",
+	"startedAt": "2026-10-01T20:40:01.173Z",
+	"finishedAt": "2026-10-01T20:40:12.198Z",
+	"createdAt": "2026-10-01T20:40:01.137Z",
+	"error": null,
+	"errorCode": null,
+	"runnerProfileJson": {
+		"adapterDispatch": {
+			"adapterType": "claude_local"
+		}
+	},
+	"contextSnapshot": {
+		"issueId": "f5b02c59-a671-4d1d-90ec-9d4d7a8f5ecd",
+		"taskId": "f5b02c59-a671-4d1d-90ec-9d4d7a8f5ecd",
+		"wakeReason": "issue_reopened_via_comment"
+	},
+	"usageJson": {
+		"model": "claude-opus-5-5",
+		"biller": "anthropic",
+		"costUsd": 0.38855059999999997,
+		"provider": "anthropic",
+		"costStatus": "reported",
+		"billingType": "subscription_included",
+		"inputTokens": 39500,
+		"usageSource": "per_run",
+		"freshSession": false,
+		"outputTokens": 1614,
+		"sessionReused": true,
+		"rawInputTokens": 39500,
+		"sessionRotated": false,
+		"configFreshness": {
+			"session": {
+				"reset": false,
+				"categories": [
+					"adapter",
+					"adapterConfig",
+					"agentRuntimeConfig",
+					"instructions",
+					"issueOverrides",
+					"workspaceConfig",
+					"environment",
+					"envBindings",
+					"secrets",
+					"runtimeSkills"
+				],
+				"resetReasons": [],
+				"nextFingerprint": "v1:sha256:f2235284ccab6ddc0af7e0c195c48abfaffe44179e176c9cbadd7ffc639eaf60",
+				"changedCategories": [],
+				"taskSessionReused": true,
+				"fingerprintVersion": 1,
+				"taskSessionAvailable": true,
+				"storedFingerprintPresent": true
+			},
+			"version": 1,
+			"workspace": {
+				"action": "create",
+				"reasons": [],
+				"categories": [
+					"mode",
+					"projectWorkspace",
+					"strategy",
+					"repo",
+					"lifecycleCommands",
+					"runtimeServices",
+					"environment",
+					"realization"
+				],
+				"reuseRequested": false,
+				"nextFingerprint": "v1:sha256:5ce92b3028e02bb43412e58e850d1e999e08479f4bdf8a112e1f38ad7abb7065",
+				"workspaceReused": false,
+				"activeWorkspaceId": null,
+				"changedCategories": [],
+				"storedFingerprint": null,
+				"fingerprintVersion": 1,
+				"inferredFingerprint": null,
+				"previousWorkspaceId": null,
+				"configSnapshotRefreshed": false,
+				"storedFingerprintPresent": false
+			}
+		},
+		"rawOutputTokens": 1614,
+		"cachedInputTokens": 201673,
+		"taskSessionReused": true,
+		"persistedSessionId": "80249cc0-4960-4630-954b-e67ee3e8f0c4",
+		"cacheAdjustedCostUsd": 0.38855059999999997,
+		"rawCachedInputTokens": 201673,
+		"sessionRotationReason": null
+	}
+}

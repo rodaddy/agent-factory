@@ -1,0 +1,24 @@
+schema: hosted-app-registry/v1
+
+name: linkedin-automation
+repo: rodaddy/linkedin-automation
+declaration: hosted-app.yaml
+accepted:
+  ref: 3f9c2a1e7b0d4c5f8a9b1c2d3e4f5a6b7c8d9e0f
+  declaration_sha256: 9c1faaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111
+  images:
+    uat:
+      tag: v0.3.0
+      image: 10.0.20.58:3000/rtech/linkedin-automation:v0.3.0@sha256:aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111
+    prod:
+      tag: v0.3.0
+      image: 10.0.20.58:3000/rtech/linkedin-automation:v0.3.0@sha256:aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111
+  by: rico
+  on: 2026-09-07
+targets:
+  - name: uat
+    merge: auto
+  - name: prod
+    merge: manual
+state: active
+notes: first ordinary app on the rail

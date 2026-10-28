@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Render a wayfinder map issue body from a milestone snapshot (sf#1186).
+
+stdin: {"repo": "owner/repo", "milestones": [{"title", "goal", "doneWhen",
+"issues": [{"number", "title", "state", "blockedBy": [n]}]}], "unassigned": [...]}
+stdout: the map body. Deterministic: same input, same bytes.
+"""
+import json
+import sys
+
+FORGE = "https://forge.example.internal"
+
+
+def row(repo, issue):
+    box = "x" if issue.get("state") == "closed" else " "
+    n = int(issue["number"])
+    title = " ".join(str(issue.get("title", "")).split())
+    return f"- [{box}] [#{n} {title}]({FORGE}/{repo}/issues/{n})"
+
+
+def main():
+    data = json.load(sys.stdin)
+    repo = data["repo"]
+    milestones = data.get("milestones") or []
+    out = [f"# Roadmap: {repo}", "", "## Destination", ""]
+    dest = data.get("destination") or "Every milestone below closed."
+    out += [dest, ""]
+    edges = set()
+    for ms in milestones:
+        issues = sorted(ms.get("issues") or [], key=lambda i: int(i["number"]))
+        done = sum(1 for i in issues if i.get("state") == "closed")
+        out += [f"## {ms['title']} ({done}/{len(issues)} done)", ""]
+        if ms.get("goal"):
+            out.append(f"Goal: {ms['goal']}")
+        if ms.get("doneWhen"):
+            out.append(f"Done when: {ms['doneWhen']}")
+        if ms.get("goal") or ms.get("doneWhen"):
+            out.append("")
+        out += [row(repo, i) for i in issues]
+        out.append("")
+        for i in issues:
+            for b in i.get("blockedBy") or []:
+                edges.add((int(b), int(i["number"])))
+    out += ["## Not yet specified", ""]
+    unassigned = sorted(data.get("unassigned") or [], key=lambda i: int(i["number"]))
+    if unassigned:
+        out += [row(repo, i) for i in unassigned]
+    else:
+        out.append("Nothing outside a milestone.")
+    out += ["", "## Out of scope", "", "Anything not listed above.", ""]
+    out += ["## Blocking", "", "```mermaid", "graph LR"]
+    if edges:
+        out += [f"    {a} --> {b}" for a, b in sorted(edges)]
+    else:
+        out.append("    none[no blocking edges]")
+    out += ["```", ""]
+    sys.stdout.write("\n".join(out))
+
+
+if __name__ == "__main__":
+    main()

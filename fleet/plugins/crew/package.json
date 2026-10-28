@@ -1,0 +1,12 @@
+{
+	"name": "@rodaddy/crew",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Crew portraits inside Paperclip (sf#1172)",
+	"paperclipPlugin": {
+		"manifest": "./manifest.js",
+		"worker": "./worker.js",
+		"ui": "./ui"
+	}
+}

@@ -1,0 +1,127 @@
+#!/usr/bin/env bun
+/**
+ * bulk-cancel: cancel a seat's queued work without the recovery
+ * echo. Cancelling a queued run leaves its issue `todo`, and assignment
+ * recovery re-queued a run ~14 ms after each cancel (201 on 2026-10-07). So the
+ * issue is parked in `backlog` FIRST, and only then are its queued runs
+ * cancelled.
+ *
+ * Usage: bulk-cancel --seat <name> [--title-prefix <p>] [--older-than <hours>]
+ *          [--include-open-pr-tasks] [--apply --rollback-file <path>]
+ * Takes the seat's `todo` issues (narrowed by title prefix and createdAt age).
+ * Dry run by default. --apply writes the rollback file (issue id, old status,
+ * old assignee; never overwrites) before any board write, then per issue:
+ * PATCH /api/issues/:id {status: backlog}, then for each of its queued runs
+ * POST /api/heartbeat-runs/{runId}/cancel (openapi "/api/heartbeat-runs/{runId}/cancel",
+ * board-only, operator-stamped). A failed park skips that issue's cancels.
+ *
+ * An issue titled `Review <repo>#<n> @ ...` or `Merge <repo>#<n> @ ...` is
+ * REFUSED unless Forge says that PR is closed (GET <FORGEJO_API_URL>/repos/
+ * <repo>/pulls/<n>, header `Authorization: token`, as pr-facts).
+ * --include-open-pr-tasks takes them anyway, with a warning.
+ *
+ * Env: as seat-lib.ts, plus FORGEJO_API_URL and FORGEJO_TOKEN.
+ * Exit: 0 done | 1 an API error, an unknown seat, an existing rollback file, or
+ * a failed write | 3 bad usage or missing env.
+ */
+import { writeFileSync } from "node:fs";
+import { board, type Issue, requireEnv, runIssue, seatId, seatIssues, seatRuns } from "./seat-lib.ts";
+
+const USAGE =
+	"usage: bulk-cancel --seat <name> [--title-prefix <p>] [--older-than <hours>] [--include-open-pr-tasks] [--apply --rollback-file <path>]";
+const PR_TASK = /^(?:Review|Merge) ([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)#(\d+) @ /;
+
+function usage(): never {
+	console.error(USAGE);
+	process.exit(3);
+}
+
+const opt: Record<string, string> = {};
+const flags = new Set<string>();
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+	const a = argv[i] ?? "";
+	if (["--apply", "--include-open-pr-tasks"].includes(a)) flags.add(a);
+	else if (["--seat", "--title-prefix", "--older-than", "--rollback-file"].includes(a) && argv[i + 1]) opt[a] = argv[++i] ?? "";
+	else usage();
+}
+const seat = opt["--seat"];
+const olderThan = opt["--older-than"];
+const apply = flags.has("--apply");
+const rollback = opt["--rollback-file"];
+if (!seat || (olderThan !== undefined && !/^\d+(\.\d+)?$/.test(olderThan)) || (apply && !rollback)) usage();
+requireEnv("bulk-cancel", USAGE);
+const forge = (process.env.FORGEJO_API_URL ?? "").replace(/\/+$/, "");
+if (!forge || !process.env.FORGEJO_TOKEN) {
+	console.error(`bulk-cancel: FORGEJO_API_URL and FORGEJO_TOKEN are required; ${USAGE}`);
+	process.exit(3);
+}
+
+/** Why `issue` must not be parked, or null. Throws on a Forge error. */
+async function refusal(issue: Issue): Promise<string | null> {
+	const m = (issue.title ?? "").match(PR_TASK);
+	if (!m) return null;
+	const r = await fetch(`${forge}/repos/${m[1]}/pulls/${m[2]}`, {
+		headers: { Authorization: `token ${process.env.FORGEJO_TOKEN}` },
+		signal: AbortSignal.timeout(20_000),
+	});
+	if (r.status === 404) return "PR not found";
+	if (!r.ok) throw new Error(`Forge ${m[1]}#${m[2]} -> ${r.status}`);
+	const { state } = (await r.json()) as { state?: string };
+	return state === "closed" ? null : `PR ${state}`;
+}
+
+async function main(): Promise<number> {
+	const agentId = await seatId(seat as string);
+	const cutoff = Date.now() - Number(olderThan) * 3_600_000;
+	const issues = (await seatIssues(agentId, "todo")).filter(
+		(i) =>
+			(i.title ?? "").startsWith(opt["--title-prefix"] ?? "") &&
+			(olderThan === undefined || Date.parse(i.createdAt ?? "") < cutoff),
+	);
+	const runs = (await seatRuns("bulk-cancel", agentId)).filter((r) => r.status === "queued");
+	const plan: { issue: Issue; runs: string[] }[] = [];
+	let refused = 0;
+	for (const issue of issues) {
+		const name = `${issue.identifier ?? issue.id} ${issue.title ?? ""}`;
+		const why = await refusal(issue);
+		if (why && !flags.has("--include-open-pr-tasks")) {
+			refused++;
+			console.log(`refuse ${name} (${why})`);
+			continue;
+		}
+		if (why) console.error(`bulk-cancel: warning: taking ${name} although its ${why}`);
+		const mine = runs.filter((r) => runIssue(r) === issue.id).map((r) => r.id);
+		plan.push({ issue, runs: mine });
+		console.log(`park ${name} queued=${mine.join(",") || "-"}`);
+	}
+	let failed = 0;
+	if (apply) {
+		const saved = plan.map(({ issue }) => ({
+			id: issue.id,
+			status: issue.status,
+			assigneeAgentId: issue.assigneeAgentId ?? null,
+		}));
+		writeFileSync(rollback as string, `${JSON.stringify(saved, null, 2)}\n`, { flag: "wx" });
+		for (const { issue, runs: ids } of plan) {
+			try {
+				await board("PATCH", `/issues/${encodeURIComponent(issue.id)}`, { status: "backlog" });
+				for (const id of ids) await board("POST", `/heartbeat-runs/${encodeURIComponent(id)}/cancel`);
+			} catch (e) {
+				failed++;
+				console.error(`bulk-cancel: ${issue.id}: ${(e as Error).message}`);
+			}
+		}
+	}
+	const n = plan.reduce((s, p) => s + p.runs.length, 0);
+	const mode = apply ? `applied${failed ? `, ${failed} failed` : ""}` : "dry run";
+	console.log(`bulk-cancel: ${plan.length} issues, ${n} runs, ${refused} refused (${mode})`);
+	return failed ? 1 : 0;
+}
+
+try {
+	process.exit(await main());
+} catch (e) {
+	console.error(`bulk-cancel: ${(e as Error).message.split("\n")[0]}`);
+	process.exit(1);
+}

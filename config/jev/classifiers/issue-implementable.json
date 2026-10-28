@@ -1,0 +1,239 @@
+{
+	"id": "issue-implementable",
+	"version": 1,
+	"type": "noul",
+	"about": "D2: is an issue specified enough for the implement lane to produce code without asking questions",
+	"ask": "The state is a software issue (`title`, `body`) that an autonomous coding agent would implement without asking any questions. Does `body` say what to change, where (files, modules, or components), and how to check it is done (acceptance criteria, a test, or a command), with no open design decision left to the implementer? Answer yes only when all three are present and nothing is left to decide. Answer no for maps, epics, alerts, questions, discussion, reports, or anything that needs a human decision first.",
+	"confident": 0.8,
+	"policy": {
+		"yes": {
+			"verdict": "READY",
+			"order": 0,
+			"why": "states what, where, and done"
+		},
+		"no": {
+			"verdict": "NEEDS_SPEC",
+			"order": 1,
+			"why": "missing what, where, or done, or a decision is open"
+		}
+	},
+	"unsure": {
+		"verdict": "UNSURE"
+	},
+	"no_signal": {
+		"verdict": "NO_SIGNAL",
+		"why": "no Jev signal"
+	},
+	"examples": [
+		{
+			"fields": {
+				"title": "the config loader: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/config/load.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the webhook receiver: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/hooks/receiver.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the status page: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/status/server.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the retry scheduler: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/reconcile/retry.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the log redactor: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/log/redact.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the result publisher: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/results/publish.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the sweep timer: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/reconcile/sweep.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the job ledger: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/db/jobs.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the review poster: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/review/post.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the metrics endpoint: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/status/metrics.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the packet loader: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/packets/loader.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the runner transport: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/runner/transport.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the branch namer: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/results/branch.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the label sync: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/forge/labels.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "the doctor command: reject a value outside the allowed range",
+				"body": "## Defect\n\n`src/cli/doctor.ts` accepts a negative interval and then loops without waiting.\n\n## Ask\n\nValidate the interval at load time: an integer from 1 to 3600 seconds. Anything else is a config error naming the key and the value.\n\n## Done means\n\n- A test with `-5` fails with the named error.\n- A test with `60` loads unchanged.\n\n## Non-goals\n\nNo change to the default value."
+			},
+			"expect": "yes"
+		},
+		{
+			"fields": {
+				"title": "Rethink how the status page works",
+				"body": "the status page feels clunky. We should probably redesign it, but it is not clear yet what the new shape should be. Ideas welcome."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "the retry scheduler is sometimes slow",
+				"body": "Every now and then the retry scheduler seems slow. No numbers yet, and it is not clear whether this is a problem at all. Needs investigation before anyone writes code."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Decide the retention policy for the log redactor",
+				"body": "We need to choose how long the log redactor keeps its records: 7, 30 or 90 days. This needs an owner decision first; implementation follows."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Rethink how the result publisher works",
+				"body": "the result publisher feels clunky. We should probably redesign it, but it is not clear yet what the new shape should be. Ideas welcome."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "the sweep timer is sometimes slow",
+				"body": "Every now and then the sweep timer seems slow. No numbers yet, and it is not clear whether this is a problem at all. Needs investigation before anyone writes code."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Decide the retention policy for the job ledger",
+				"body": "We need to choose how long the job ledger keeps its records: 7, 30 or 90 days. This needs an owner decision first; implementation follows."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Rethink how the review poster works",
+				"body": "the review poster feels clunky. We should probably redesign it, but it is not clear yet what the new shape should be. Ideas welcome."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "the metrics endpoint is sometimes slow",
+				"body": "Every now and then the metrics endpoint seems slow. No numbers yet, and it is not clear whether this is a problem at all. Needs investigation before anyone writes code."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Decide the retention policy for the packet loader",
+				"body": "We need to choose how long the packet loader keeps its records: 7, 30 or 90 days. This needs an owner decision first; implementation follows."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Rethink how the runner transport works",
+				"body": "the runner transport feels clunky. We should probably redesign it, but it is not clear yet what the new shape should be. Ideas welcome."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "the branch namer is sometimes slow",
+				"body": "Every now and then the branch namer seems slow. No numbers yet, and it is not clear whether this is a problem at all. Needs investigation before anyone writes code."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Decide the retention policy for the label sync",
+				"body": "We need to choose how long the label sync keeps its records: 7, 30 or 90 days. This needs an owner decision first; implementation follows."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Rethink how the doctor command works",
+				"body": "the doctor command feels clunky. We should probably redesign it, but it is not clear yet what the new shape should be. Ideas welcome."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "the queue reaper is sometimes slow",
+				"body": "Every now and then the queue reaper seems slow. No numbers yet, and it is not clear whether this is a problem at all. Needs investigation before anyone writes code."
+			},
+			"expect": "no"
+		},
+		{
+			"fields": {
+				"title": "Decide the retention policy for the config loader",
+				"body": "We need to choose how long the config loader keeps its records: 7, 30 or 90 days. This needs an owner decision first; implementation follows."
+			},
+			"expect": "no"
+		}
+	]
+}

@@ -1,0 +1,31 @@
+# Repo gitleaks config. Extends the default ruleset — this file only ALLOWLISTS
+# one known fake value; every rule otherwise stays live.
+#
+# WHY BY VALUE, NOT BY PATH. The redaction fixture table in
+# tests/results/ingest.test.ts feeds deliberately secret-shaped strings to
+# redactSecrets() to prove redaction fires. One of them (`abc123def456`) trips
+# gitleaks' generic-api-key rule — in the test file (pinned in .gitleaksignore)
+# AND in every TEXT artifact derived from repo content: the qmd sqlite WAL when
+# one is present (observed 2026-07-31, 3 hits), and the content dump the qmd
+# index exporter scans before the index copy may be committed. A fingerprint
+# pin cannot hold in files whose line numbers are meaningless, and a PATH
+# allowlist on `.qmd/` would blind those scans to a REAL secret that reached
+# the index from an untracked file. Allowlisting the one known fake VALUE keeps
+# every scan live for everything else.
+#
+# Note gitleaks' own limit, verified 2026-07-31: it skips `.qmd/index.sqlite`
+# as binary (~0 bytes scanned), so the sqlite blob itself is not covered by
+# this gate either way. The tracked index copy is made safe by
+# `scripts/dev/export-qmd-index.ts`, which dumps the index's text content and
+# fails the export if gitleaks flags the dump.
+#
+# The value below is fake, published in this repository's own test source, and
+# proves redaction — it is not, and never was, a credential.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "the redactSecrets() fixture value from tests/results/ingest.test.ts"
+regexTarget = "secret"
+regexes = ["^abc123def456$"]

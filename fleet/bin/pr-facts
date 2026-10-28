@@ -1,0 +1,116 @@
+#!/bin/bash
+# pr-facts -- one read of what a seat needs to know about a pull request.
+#
+# Usage: pr-facts <owner/repo> <n>    Read-only. Prints ONE compact JSON object:
+#   title state merged merged_at merged_by merge_commit_sha draft author base
+#   head{ref,sha} mergeable labels body totals{changed_files,additions,deletions}
+#   files[{path,additions,deletions}] truncated  (all pages, at most 200 listed)
+#   status{state,contexts[{context,state}]} | null  (combined status of the head)
+#   verdict{author,agent,created,verdict,sha} | null  (latest comment with a line
+#     `verdict: approve|approve-with-fixes|fix-first`; sha from its
+#     `## Review of <repo>#<n> at <sha>` heading)
+# Env (missing or empty is exit 3, nothing sent): FORGEJO_API_URL FORGEJO_TOKEN
+# Exit: 0 printed | 1 HTTP failure | 2 bad argument | 3 missing environment.
+# The token never reaches argv: curl reads the header from a process
+# substitution, as in forge-post.
+set -euo pipefail
+
+usage() {
+	echo "usage: pr-facts <owner/repo> <n>" >&2
+	exit 2
+}
+
+[ "$#" -eq 2 ] || usage
+repo="$1" index="$2"
+[[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || usage
+[[ "$index" =~ ^[0-9]+$ ]] || usage
+
+for name in FORGEJO_API_URL FORGEJO_TOKEN; do
+	if [ -z "${!name:-}" ]; then
+		echo "pr-facts: required environment variable $name is missing or empty" >&2
+		exit 3
+	fi
+done
+
+api="${FORGEJO_API_URL%/}/repos/$repo"
+# A curl config value is a quoted string: escape backslash and double quote.
+token="${FORGEJO_TOKEN//\\/\\\\}"
+token="${token//\"/\\\"}"
+LIMIT=50
+CAP=200
+
+# get <url> -- sets $code and $response; a failed request is exit 1.
+get() {
+	local out
+	if ! out="$(curl -sS -m 30 \
+		--config <(printf 'header = "Authorization: token %s"\n' "$token") \
+		-o - -w '\n%{http_code}' "$1")"; then
+		echo "pr-facts: request failed" >&2
+		exit 1
+	fi
+	code="${out##*$'\n'}"
+	response="${out%$'\n'*}"
+}
+
+# need <url> -- get, and anything but 200 is exit 1 (ok <url> checks the last get).
+need() { get "$1" && ok "$1"; }
+ok() {
+	if [ "$code" != "200" ]; then
+		echo "pr-facts: HTTP $code from ${1#"${FORGEJO_API_URL%/}"}" >&2
+		printf '%s' "$response" | head -c 300 >&2
+		echo >&2
+		exit 1
+	fi
+}
+
+need "$api/pulls/$index"
+pull="$response"
+sha="$(printf '%s' "$pull" | jq -r '.head.sha')"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "pr-facts: head sha is not 40 hex: $sha" >&2 && exit 1; }
+
+# Every page until a short one; one page past the cap shows whether more exist.
+files='[]'
+page=1
+while :; do
+	need "$api/pulls/$index/files?limit=$LIMIT&page=$page"
+	files="$(jq -cs add <(printf '%s' "$files") <(printf '%s' "$response"))"
+	[ "$(jq 'length' <<<"$response")" -lt "$LIMIT" ] && break
+	[ "$(jq 'length' <<<"$files")" -gt "$CAP" ] && break
+	page=$((page + 1))
+done
+
+# No status for the head yet is a fact (null), not a failure.
+status='null'
+get "$api/commits/$sha/status"
+[ "$code" = "404" ] || { ok "$api/commits/$sha/status" && status="$response"; }
+
+need "$api/issues/$index/comments"
+comments="$response"
+
+# Read from process substitutions, not argv: a busy PR's comments can pass the
+# per-argument limit (128 KiB on Linux).
+jq -cn --slurpfile p <(printf '%s' "$pull") --slurpfile f <(printf '%s' "$files") \
+	--slurpfile s <(printf '%s' "$status") --slurpfile c <(printf '%s' "$comments") \
+	--argjson cap "$CAP" '
+	$p[0] as $pull | $f[0] as $files | $s[0] as $status | $c[0] as $comments |
+	def verdict_of: [scan("(?m)^verdict:[ \t]*(approve-with-fixes|approve|fix-first)[ \t]*$")[0]] | last;
+	$pull | {
+		title, state, merged, merged_at,
+		merged_by: .merged_by.login, merge_commit_sha,
+		draft: (.draft // false), author: .user.login, base: .base.ref,
+		head: {ref: .head.ref, sha: .head.sha}, mergeable,
+		labels: [.labels[]?.name], body,
+		totals: {changed_files, additions, deletions},
+		files: [$files[:$cap][] | {path: .filename, additions, deletions}],
+		truncated: ($files | length > $cap),
+		status: (if $status == null or (($status.statuses // []) | length) == 0 then null
+			else {state: $status.state,
+				contexts: [$status.statuses[] | {context, state: .status}]} end),
+		verdict: ([$comments[] | (.body // "") as $b | ($b | verdict_of) as $v
+			| select($v != null) | {
+				author: .user.login,
+				agent: ([$b | scan("(?m)^\\*\\*agent:\\*\\* ([^ ·]+)")[0]] | first),
+				created: .created_at, verdict: $v,
+				sha: ([$b | scan("(?m)^## Review of [^ ]+ at ([0-9a-f]{7,40})\\b")[0]] | first)
+			}] | last)
+	}'

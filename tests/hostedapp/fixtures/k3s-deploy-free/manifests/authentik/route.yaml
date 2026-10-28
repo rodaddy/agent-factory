@@ -1,0 +1,8 @@
+# A non-app route: claims outside manifests/apps still count.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata: { name: authentik, namespace: authentik }
+spec:
+  routes:
+    - kind: Rule
+      match: Host(`auth.example.test`)

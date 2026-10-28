@@ -1,0 +1,278 @@
+poll_interval_minutes: 15
+
+# Optional identifiers-only early-reconciliation doorbell. Off by default. When
+# true, the local status server exposes one fixed endpoint, POST /doorbell
+# (localhost only), that lets a trusted local sender ask the watcher to run an
+# EARLY reconciliation pass instead of waiting for the next interval tick. The
+# body carries identifiers only — a configured `repository` and an optional
+# positive `item` number — and can select no job, template, command, SHA, or
+# output. Duplicate rings coalesce onto the same authoritative pass; the
+# 15-minute sweep stays authoritative and a doorbell failure is harmless.
+doorbell_enabled: false
+
+# Optional /metrics scrape allowlist. Empty by default: the whole
+# status surface stays loopback-only. Each entry is an IPv4/IPv6 address or a
+# CIDR; a peer matching one may GET /metrics and NOTHING else. Only effective
+# when the listener is off loopback (FORGE_WEBHOOK_SECRET set). List the
+# Prometheus scraper's own source address, not a broad range.
+metrics_scrape_allow: []
+
+# Optional [monitoring-critical] alert egress. ABSENT BY DEFAULT, and
+# absent means not one forge call: the watcher behaves exactly as it did before.
+# When set, a critical watcher failure opens ONE Forge issue titled
+# `[monitoring-critical] <class>` and every later failure in the same class
+# dedupes onto it — the reconcile pass runs every 15 minutes, so an alert that
+# opened an issue per failure would file 96 a day and be worse than silence.
+#
+# The target must be one of the `repositories:` below. The watcher holds a
+# credential for those and nothing else, so an unmanaged target is rejected at
+# config load rather than surfacing as a caught warn line at the moment an
+# alert was most needed.
+#
+# critical_alert:
+#   provider: forgejo
+#   repository: rodaddy/software-factory
+
+repositories:
+  - name: rodaddy/open-brain
+    provider: github
+    checks: standard
+    # Optional PR review ownership: omit (or set true) to queue the watcher's
+    # review lane; set pr_review: false when native Forge/Actions owns pull
+    # review (and static validation for a static-only repository). Existing jobs
+    # are not cancelled during a configuration cutover.
+    # The branch a change proposal targets. Optional: when unset the
+    # watcher reads the repository's default branch from the forge instead.
+    # Pinning it is the predictable choice — the target cannot move because a
+    # default branch was renamed on the forge — while the fallback keeps a
+    # repository working unconfigured. Never derivable from runner output.
+    # proposal_base_branch: main
+    # The issue label that opts ONE issue into the implement lane. Absent
+    # by default, and that default is the point: with no value here the
+    # repository queues no code-producing work at all, so enabling the lane is a
+    # deliberate per-repository act rather than something a repo acquires by
+    # being managed.
+    #
+    # This is the third gate on the lane and the only per-item one — the
+    # `implement-issue` template must ALSO be registered in code and present in
+    # the `job_templates` allowlist below. Matching is exact and
+    # case-sensitive, never a prefix: a pattern would let an unrelated label
+    # start queueing runs that produce code.
+    #
+    # Only OPEN ISSUES are candidates. A labelled pull request is ignored — the
+    # lane turns a described task into a change, and a PR already carries one.
+    # implement_label: agent:implement
+    # Per-repository opt-in for the issue-triage lane (lane C of #108). Off
+    # by default. When true, EVERY open issue without a triage job gets one —
+    # there is NO label prerequisite, because labelling is what triage does, so
+    # requiring a label to trigger it would defeat the lane. Volume is bounded by
+    # the existing dedup key (repository, item, sha, job_type): an issue has no
+    # SHA, so exactly one triage job is queued per issue.
+    # triage: true
+    # The triage label vocabulary: the FIXED allowlist the runner may
+    # choose from and the watcher applies. The filter is enforced FACTORY-SIDE at
+    # the publication boundary — a runner result naming a label outside this set
+    # applies NO label; it demotes to a structured request block inside the
+    # bounded comment (label CREATION stays human). Untrusted runner output can
+    # therefore never invent a forge label mutation; it can only pick from, or
+    # request an addition to, this author-declared set. Each entry is an exact,
+    # case-sensitive plain label name. Empty (or unset) means an opted-in repo
+    # applies no labels and every runner-named label demotes to a request.
+    # triage_labels:
+    #   - "type: bug"
+    #   - "type: feature"
+    #   - "priority: high"
+    #   - "needs-info"
+  - name: rodaddy/mcp2cli
+    provider: github
+    checks: standard
+  - name: rodaddy/rtech-mcps
+    provider: github
+    checks: standard
+  - name: rodaddy/rtech-audit
+    provider: github
+    checks: standard
+  - name: rtech/rtech-infra
+    provider: github
+    checks: static-only
+    # How the static-only lane selects which fixed static gates run.
+    # `full` (default) always runs every fixed static gate; `changed-files`
+    # reads only the candidate's changed PATHS and runs only the relevant
+    # fixed gates, still failing closed to a full escalation on any
+    # indeterminate or cross-cutting change. It selects no command, host, or
+    # endpoint — only which fixed reviewed gates apply.
+    gate_selection: full
+    # The implement lane is enabled for rtech-infra behind this per-issue label.
+    # `checks: static-only` above is UNCHANGED and unrelated: it selects
+    # which fixed gates run over a PR, while `implement_label` selects which
+    # OPEN ISSUES may queue a code-producing run. The lane returns a patch and
+    # opens a PR; it applies nothing and deploys nothing.
+    implement_label: factory-implement
+  # The k3s build-bump pilot repository. Enrolment lives HERE, in
+  # factory config, not in the product repo — a product repo cannot opt itself
+  # into a lane. Shown commented like the forgejo example below: this file is
+  # loaded by tests, and the FIRST live forgejo row switches on the doctor's
+  # forgejo-read probe (src/doctor/command.ts), which the hermetic fixtures
+  # deliberately carry no token for. The live row belongs in deployed config
+  # when the lane's consumers land (sf#542-544).
+  #
+  # The PRESENCE of the `build_bump` block is the enrolment: a repository
+  # without it queues no build-bump work at all, the same opt-in posture as
+  # `implement_label` and `triage`.
+  # - name: acme/web-bb-landing
+  #   provider: forgejo
+  #   checks: static-only
+  #   build_bump:
+  #     # THE ORDERED ENVIRONMENT LIST. A repository declares the levels it
+  #     # has, in order. The FIRST follows the version-tag stream
+  #     # (`promote: tag`, the default at index 0): every tag matching
+  #     # `tag_pattern` is a candidate, newest by commit date first. Every
+  #     # LATER environment follows a movable tag named after itself
+  #     # (`promote: marker`, `marker` defaulting to the environment name).
+  #     # The common case is one environment and no marker, as here.
+  #     #
+  #     # `name` is a lowercase DNS label, max 16. `app_dirs` is the
+  #     # k3s-deploy app directories (`manifests/apps/<name>`) that
+  #     # environment owns: required, non-empty, at most 10, each a plain
+  #     # directory name — no `/`, no `..`, no whitespace — because it is
+  #     # interpolated into the bump script's `--app` argument, which makes
+  #     # the schema regex the security boundary rather than a style rule.
+  #     # A directory belongs to at most ONE environment in the repository.
+  #     environments:
+  #       - { name: live, app_dirs: [bb-landing] }
+  #     # Which tags trigger a bump: a single anchored glob over the bare tag
+  #     # NAME, never a ref path. At most one `*`, and the first character must
+  #     # be alphanumeric — this pattern selects the tag a later lane passes as
+  #     # the bump script's `--tag` argument, so an option-shaped pattern (`-*`)
+  #     # and a match-everything `*` are both refused. Defaults to `v*`.
+  #     tag_pattern: "v*"
+  # ONE REPOSITORY, SEVERAL IMAGES. A repository that ships more than
+  # one Containerfile declares `images` instead of the top-level
+  # `environments`: one Kaniko build per entry from its own dockerfile,
+  # published as <registry>/<owner>/<name>:<tag>, and one bump PR per app
+  # directory the entry's environments name. `name` is a lowercase DNS label
+  # (it becomes the Job name and the registry path); `dockerfile` is a plain
+  # repo-relative path (no leading `/`, no `..` segment — it is Kaniko's
+  # --dockerfile inside the clone). An app directory belongs to at most one
+  # image, and the top-level `environments` must be absent when `images` is
+  # present.
+  #
+  # `acme-portal` below is the RARE multi-level shape: two environments,
+  # where a movable tag named `prod` selects which version prod receives.
+  # Moving that tag to an older version tag IS a legitimate deploy of that
+  # older version. The explicit equivalent of the second entry is
+  # `{ name: prod, app_dirs: [...], promote: marker, marker: prod }`.
+  # - name: rodaddy/rtech-mcps
+  #   provider: forgejo
+  #   checks: static-only
+  #   build_bump:
+  #     images:
+  #       - name: mcp-gitingest
+  #         dockerfile: servers/gitingest/Containerfile
+  #         environments:
+  #           - { name: live, app_dirs: [mcp-gitingest] }
+  #       - name: mcp-amazon
+  #         dockerfile: servers/amazon-product-search/Containerfile
+  #         environments:
+  #           - { name: live, app_dirs: [mcp-amazon] }
+  #       - name: acme-portal
+  #         dockerfile: portal/Containerfile
+  #         environments:
+  #           - { name: uat, app_dirs: [acme-portal-uat] }
+  #           - { name: prod, app_dirs: [acme-portal-prod] }
+  # Forgejo is the closed, reviewed forge.example.internal provider; no arbitrary
+  # host or clone URL may be configured. Its changed-files API is treated
+  # conservatively: any unsupported/indeterminate comparison escalates to all
+  # fixed static gates.
+  # - name: rodaddy/example
+  #   provider: forgejo
+  #   checks: static-only
+  #   gate_selection: changed-files
+
+# Allowlisted job templates. Only ids listed here may ever be dispatched to a
+# runner box. Fixed and reviewed — no arbitrary commands (see _DOCS/decisions.md).
+job_templates:
+  - id: repo-validate
+    label: Repository validation
+    runner_size: small
+  - id: pr-review
+    label: Pull request review
+    runner_size: medium
+  - id: issue-triage
+    label: Issue triage
+    runner_size: small
+  - id: infra-static
+    label: rtech-infra static validation
+    runner_size: small
+  # The AGENTLESS variant of the lane directly above. Same reviewed static
+  # command set, executed by the box with no agent binary and therefore no agent
+  # credential — the failure class behind 173 of 291 observed job failures, and
+  # the one the 2026-08-14 fleet OAuth outage was made of.
+  #
+  # It is a SEPARATE id, not a flag, so this line IS the opt-in: listing it
+  # dispatches agentless, and removing it returns the repository to the agent
+  # lane above with no code change. Listing BOTH is legitimate and runs two
+  # independent lanes; it is not a fallback chain, and neither is a prerequisite
+  # for the other.
+  #
+  # WRITTEN, NOT RUNNING: the wrapper half (a `script` arm on
+  # rtech-infra `scripts/runner-job`) is PROPOSED and does not exist on the live
+  # fleet, so a dispatch today is refused by the verb as an unknown runtime —
+  # terminally, on the first attempt, with the box reaped at once. Enable this
+  # only once that arm is RUNNING; merged is not deployed.
+  # - id: infra-static-agentless
+  #   label: rtech-infra static validation (agentless)
+  #   runner_size: small
+  # The fixed implement lane — the ONLY template whose runner output is a
+  # proposed CHANGE rather than a report. Commented out by default: it is the
+  # one lane that modifies a tree, so it must be opted into deliberately.
+  #
+  # `return_mode` selects who moves the bytes, not what the runner may do:
+  #   patch (default) — the runner writes a git bundle to its own job output
+  #     directory and holds NO forge write credential. The watcher verifies the
+  #     bundle and pushes from the service host. A bundle is inspectable before
+  #     it becomes a branch, so this is the reviewable default.
+  #   push — the runner pushes an `rw/`-prefixed branch itself. This places a
+  #     repo-write credential inside a privileged box running agent-authored
+  #     code, so it is gated on the least-privilege runner identity.
+  #
+  # `push` is REFUSED by the config schema today: that runner identity
+  # does not exist yet and nothing ingests a push-mode hand-back, so the mode is
+  # inert and selecting it would silently return nothing. Once the forge-side
+  # identity is in place, a template opts in explicitly with
+  # `push_identity_ready: true` alongside `return_mode: push`. `patch` needs no
+  # such flag and is unaffected.
+  #
+  # Neither mode can merge or force-push, and a change touching any CI workflow
+  # path is rejected at the ingest boundary regardless of mode.
+  # - id: implement-issue
+  #   label: Implement a labelled issue
+  #   runner_size: medium
+  #   return_mode: patch
+
+# The box-run scheduled-audit lane was retired with sf#830 (D10).
+
+# The Forge runner fleet's scaling envelope. Top-level, and ABSENT MEANS
+# DISABLED — the same opt-in posture `build_bump` takes on a repository. With no
+# block the scaling pass returns before reading the queue or contacting the
+# gateway, so leaving this commented out costs a deployment nothing.
+#
+# The watcher brings slots up and down via runner_forge_up / runner_forge_down.
+#
+# When present, the pass groups the persistent forge band's registered runners
+# (VMIDs 9101-9150, `src/runner/bands.ts`) by label set. Per group it starts the
+# lowest stopped member when fewer than `floor` run, or when a waiting Forge job
+# the group can run finds no free member; it stops the highest idle member once
+# it has been idle `idle_minutes` and nothing waits for the group. Members are
+# STARTED and STOPPED, never placed or destroyed. At most one start and one stop
+# per group per pass.
+#
+# forge_runner_fleet:
+#   # Minimum running members PER LABEL GROUP. 1-50; defaults to 1.
+#   floor: 1
+#   # Minutes a member must sit Forge-idle before it may be stopped. Defaults to 20.
+#   idle_minutes: 20
+#   # The wall on TOTAL running members. Must be >= floor, at most 50. Defaults to 10.
+#   cap: 10
+#   # The one vmid never taken down and always brought up. Requires `floor: 0`.
+#   # standing: 9101

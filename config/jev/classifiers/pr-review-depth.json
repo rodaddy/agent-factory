@@ -1,0 +1,276 @@
+{
+	"id": "pr-review-depth",
+	"version": 2,
+	"type": "score",
+	"about": "D5: how much independent review a pull request needs before merge",
+	"ask": "The state is a pull request: its `title`, the `files` it changes, and a `diff` excerpt. How much independent review does it need before it is merged?",
+	"confident": 0.7,
+	"criteria": {
+		"low": "Docs, reports, handovers, issue mirrors, comments, formatting, or test data only; nothing that runs in production or in CI changes.",
+		"medium": "Ordinary application code or tests with a contained blast radius; no workflow, credential, deploy, database, or security-boundary change.",
+		"high": "CI or workflow files; credential, token, or secret handling; deploy or infrastructure code; database migrations; code that validates, filters, or refuses untrusted input or runner output (change ingest, path confinement, allowlists, redaction, injection or secret guards, done-means security checks); or anything that writes to a forge or runs in the live watcher service (dispatch, hooks, status posting)."
+	},
+	"policy": {
+		"low": {
+			"verdict": "LIGHT",
+			"order": 0
+		},
+		"medium": {
+			"verdict": "STANDARD",
+			"order": 1
+		},
+		"high": {
+			"verdict": "FULL",
+			"order": 2
+		}
+	},
+	"unsure": {
+		"verdict": "UNSURE"
+	},
+	"no_signal": {
+		"verdict": "NO_SIGNAL",
+		"why": "no Jev signal"
+	},
+	"examples": [
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the config loader notes",
+				"files": "_DOCS/config/load.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the config loader recieves one event per call.\n+The the config loader receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the webhook receiver notes",
+				"files": "_DOCS/hooks/receiver.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the webhook receiver recieves one event per call.\n+The the webhook receiver receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the status page notes",
+				"files": "_DOCS/status/server.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the status page recieves one event per call.\n+The the status page receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the retry scheduler notes",
+				"files": "_DOCS/reconcile/retry.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the retry scheduler recieves one event per call.\n+The the retry scheduler receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the log redactor notes",
+				"files": "_DOCS/log/redact.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the log redactor recieves one event per call.\n+The the log redactor receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the result publisher notes",
+				"files": "_DOCS/results/publish.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the result publisher recieves one event per call.\n+The the result publisher receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the sweep timer notes",
+				"files": "_DOCS/reconcile/sweep.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the sweep timer recieves one event per call.\n+The the sweep timer receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the job ledger notes",
+				"files": "_DOCS/db/jobs.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the job ledger recieves one event per call.\n+The the job ledger receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the review poster notes",
+				"files": "_DOCS/review/post.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the review poster recieves one event per call.\n+The the review poster receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "docs: fix a typo in the the metrics endpoint notes",
+				"files": "_DOCS/status/metrics.md",
+				"diff": "@@ -3,3 +3,3 @@\n-The the metrics endpoint recieves one event per call.\n+The the metrics endpoint receives one event per call.\n"
+			},
+			"expect": "low"
+		},
+		{
+			"fields": {
+				"title": "fix: the log redactor logs the error class on failure",
+				"files": "src/log/redact.ts\ntests/log/redact.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "feat: the review poster now holds a write credential for merges",
+				"files": "src/review/post.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "fix: the result publisher logs the error class on failure",
+				"files": "src/results/publish.ts\ntests/results/publish.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "fix: the sweep timer logs the error class on failure",
+				"files": "src/reconcile/sweep.ts\ntests/reconcile/sweep.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "fix: the job ledger logs the error class on failure",
+				"files": "src/db/jobs.ts\ntests/db/jobs.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "fix: the review poster logs the error class on failure",
+				"files": "src/review/post.ts\ntests/review/post.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "fix: the metrics endpoint logs the error class on failure",
+				"files": "src/status/metrics.ts\ntests/status/metrics.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "fix: the packet loader logs the error class on failure",
+				"files": "src/packets/loader.ts\ntests/packets/loader.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "fix: the runner transport logs the error class on failure",
+				"files": "src/runner/transport.ts\ntests/runner/transport.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "fix: the branch namer logs the error class on failure",
+				"files": "src/results/branch.ts\ntests/results/branch.test.ts",
+				"diff": "@@ -20,6 +20,7 @@\n \t} catch (err) {\n+\t\tlog.warn({ errorClass: classify(err) }, \"call failed\");\n \t\treturn { ok: false };\n \t}\n"
+			},
+			"expect": "medium"
+		},
+		{
+			"fields": {
+				"title": "feat: the metrics endpoint now holds a write credential for merges",
+				"files": "src/status/metrics.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the packet loader now holds a write credential for merges",
+				"files": "src/packets/loader.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the runner transport now holds a write credential for merges",
+				"files": "src/runner/transport.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the branch namer now holds a write credential for merges",
+				"files": "src/results/branch.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the label sync now holds a write credential for merges",
+				"files": "src/forge/labels.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the doctor command now holds a write credential for merges",
+				"files": "src/cli/doctor.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the queue reaper now holds a write credential for merges",
+				"files": "src/reconcile/reap.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the config loader now holds a write credential for merges",
+				"files": "src/config/load.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the webhook receiver now holds a write credential for merges",
+				"files": "src/hooks/receiver.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		},
+		{
+			"fields": {
+				"title": "feat: the status page now holds a write credential for merges",
+				"files": "src/status/server.ts\nsrc/auth/token.ts\n.forgejo/workflows/merge.yml",
+				"diff": "@@ -1,8 +1,14 @@\n+import { writeToken } from \"../auth/token\";\n@@ -40,6 +46,12 @@\n+\tconst token = await writeToken();\n+\tawait forge.merge(pr, { token, force: input.force });\n"
+			},
+			"expect": "high"
+		}
+	]
+}
