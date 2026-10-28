@@ -30,6 +30,7 @@
 			"!**/node_modules",
 			"!**/dist",
 			"!drizzle",
+			"!docs/images",
 			"!_reports/test-runs",
 			"!fleet/forge",
 			"!tests/fleet/policy",

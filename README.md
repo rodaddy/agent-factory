@@ -86,6 +86,7 @@ cd agent-factory
 bun install
 cp env.example .env                            # fill in; never commit it
 cp config/repos.example.yml config/repos.yml   # list your repositories
+bun run db:migrate                             # create the schema in DATABASE_URL
 bun run src/index.ts doctor --config config/repos.yml
 bun run src/index.ts reconcile once --config config/repos.yml --shadow
 bun run src/index.ts watch
